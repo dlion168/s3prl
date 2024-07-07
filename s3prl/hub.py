@@ -33,6 +33,9 @@ from s3prl.upstream.vq_wav2vec.hubconf import *
 from s3prl.upstream.wav2vec2.hubconf import *
 from s3prl.upstream.wav2vec.hubconf import *
 from s3prl.upstream.wavlm.hubconf import *
+from s3prl.upstream.nextgpt.hubconf import *
+from s3prl.upstream.pandagpt.hubconf import *
+from s3prl.upstream.speechgpt.hubconf import *
 
 
 def options(only_registered_ckpt: bool = False):
