@@ -1720,7 +1720,6 @@ class GumbelVectorQuantizer(nn.Module):
         return res["x"], res["targets"]
 
     def forward(self, x, produce_targets=False):
-
         result = {"num_vars": self.num_vars * self.groups}
 
         if not self.time_first:
@@ -2541,7 +2540,6 @@ class Wav2Vec2Model(nn.Module):
         return x, mask_indices
 
     def sample_negatives(self, y, num, padding_count=None):
-
         if self.n_negatives == 0 and self.cross_sample_negatives == 0:
             return y.new(0)
 
@@ -2599,7 +2597,6 @@ class Wav2Vec2Model(nn.Module):
         return negs, neg_idxs
 
     def compute_preds(self, x, y, negatives):
-
         neg_is_pos = (y == negatives).all(-1)
         y = y.unsqueeze(0)
         targets = torch.cat([y, negatives], dim=0)
@@ -2638,7 +2635,6 @@ class Wav2Vec2Model(nn.Module):
         mask_channel_indices=None,
         padding_count=None,
     ):
-
         if self.feature_grad_mult > 0:
             features = self.feature_extractor(source)
             if self.feature_grad_mult != 1.0:
@@ -2929,7 +2925,6 @@ class ConvFeatureExtractionModel(nn.Module):
             in_d = dim
 
     def forward(self, x):
-
         # BxT -> BxCxT
         x = x.unsqueeze(1)
 
@@ -2985,7 +2980,12 @@ class TransformerEncoder(nn.Module):
             )
         return layer
 
-    def __init__(self, args: Wav2Vec2Config):
+    def __init__(
+        self,
+        args: Wav2Vec2Config,
+        skip_pos_conv: bool = False,
+        override_encoder_layer: int = None,
+    ):
         super().__init__()
 
         self.dropout = args.dropout
@@ -3022,6 +3022,8 @@ class TransformerEncoder(nn.Module):
                 self.embedding_dim, k, args.conv_pos_groups, num_layers
             )
 
+        elif skip_pos_conv:
+            self.pos_conv = None
         else:
             self.pos_conv = make_conv_pos(
                 self.embedding_dim,
@@ -3029,8 +3031,13 @@ class TransformerEncoder(nn.Module):
                 args.conv_pos_groups,
             )
 
+        if override_encoder_layer is None:
+            encoder_layers = args.encoder_layers
+        else:
+            encoder_layers = override_encoder_layer
+
         self.layers = nn.ModuleList(
-            [self.build_encoder_layer(args) for _ in range(args.encoder_layers)]
+            [self.build_encoder_layer(args) for _ in range(encoder_layers)]
         )
         self.layer_norm_first = args.layer_norm_first
         self.layer_norm = LayerNorm(self.embedding_dim)
@@ -3051,13 +3058,13 @@ class TransformerEncoder(nn.Module):
         tgt_layer=None,
         min_layer=0,
     ):
-
         if padding_mask is not None:
             x = index_put(x, padding_mask, 0)
 
-        x_conv = self.pos_conv(x.transpose(1, 2))
-        x_conv = x_conv.transpose(1, 2)
-        x = x + x_conv
+        if self.pos_conv is not None:
+            x_conv = self.pos_conv(x.transpose(1, 2))
+            x_conv = x_conv.transpose(1, 2)
+            x = x + x_conv
 
         if not self.layer_norm_first:
             x = self.layer_norm(x)
@@ -3221,7 +3228,6 @@ class TransformerSentenceEncoderLayer(nn.Module):
         activation_fn: str = "relu",
         layer_norm_first: bool = False,
     ) -> None:
-
         super().__init__()
         # Initialize parameters
         self.embedding_dim = embedding_dim

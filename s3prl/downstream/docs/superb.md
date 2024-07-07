@@ -165,21 +165,36 @@ Installing all the dependencies right could be quite complicated. Note that the 
 
 ##### I. Prepare Decoding Environment
 
-1. Install [KenLM](https://github.com/kpu/kenlm)
-    - Please follow the official installation instructions of KenLM instead of the one documented in flashlight or wav2letter du to some known issues.
+The decoding evnironment depends on [flashlight-text](https://github.com/flashlight/text/tree/main/bindings/python) and [flashlight-sequence](https://github.com/flashlight/sequence/tree/main/bindings/python).
+You can install these two packages following the links or the steps below:
 
-2. Install [flashlight python bindings](https://github.com/flashlight/flashlight/blob/master/bindings/python/README.md)
-    - Only the **python bindings** is required instead of the entire flashlight toolkit
+1. Install [KenLM](https://github.com/kpu/kenlm) python package
+    ```
+    git clone https://github.com/kpu/kenlm
+    cd kenlm/
+    pip install .
+    ```
 
-3. Download LibriSpeech official 4-gram LM
+2. Install `flashlight-text`
+    ```
+    pip install flashlight-text
+    ```
+
+3. Install `flashlight-sequence`
+    ```
+    git clone https://github.com/flashlight/sequence.git
+    cd sequence/
+    pip install .
+    ```
+
+4. Download LibriSpeech official 4-gram LM
     - https://www.openslr.org/resources/11/4-gram.arpa.gz
     - Downloaded filename: **4-gram.arpa.gz**
 
-4. Download character-based lexicon
+5. Download character-based lexicon
     - https://dl.fbaipublicfiles.com/fairseq/wav2vec/librispeech_lexicon.lst
     - Downloaded filename: **librispeech_lexicon.lst**
 
-5. Make sure your fairseq version contains this commit [cb8469](https://github.com/pytorch/fairseq/commit/cb84694c195afced474d17318b5e746d1a9d20a3#diff-ee3a94b6d9b5f2cc60f1b69afc075abbe2061083b52515178eb7145d59e7e7e4)
 
 ##### II. Test
 
@@ -317,7 +332,7 @@ Specified by the command `-d fluent_commands`
     - Official data link: http://fluent.ai:2052/jf8398hf30f0381738rucj3828chfdnchs.tar.gz
     - Official website: https://fluent.ai/fluent-speech-commands-a-dataset-for-spoken-language-understanding-research/
     - Since the official link might break occasionally, we provide a backup link. If this is not allowed please let us know and we will remove it immediately.
-    - Please use `wget http://140.112.21.28:9000/fluent.tar.gz`
+    - Please use `wget https://huggingface.co/datasets/leo19941227/fluent_speech_commands/resolve/main/fluent.tar.gz?download=true`
 
 2. Check the prepared file structure
 
@@ -412,10 +427,10 @@ python3 run_downstream.py -m evaluate -e result/downstream/ExpName/dev-best.ckpt
     
     # prepare dev
     cd $voxceleb1_root/dev/
-    wget https://thor.robots.ox.ac.uk/~vgg/data/voxceleb/vox1a/vox1_dev_wav_partaa
-    wget https://thor.robots.ox.ac.uk/~vgg/data/voxceleb/vox1a/vox1_dev_wav_partab
-    wget https://thor.robots.ox.ac.uk/~vgg/data/voxceleb/vox1a/vox1_dev_wav_partac
-    wget https://thor.robots.ox.ac.uk/~vgg/data/voxceleb/vox1a/vox1_dev_wav_partad
+    wget https://huggingface.co/datasets/ProgramComputer/voxceleb/resolve/main/vox1/vox1_dev_wav_partaa?download=true
+    wget https://huggingface.co/datasets/ProgramComputer/voxceleb/resolve/main/vox1/vox1_dev_wav_partab?download=true
+    wget https://huggingface.co/datasets/ProgramComputer/voxceleb/resolve/main/vox1/vox1_dev_wav_partac?download=true
+    wget https://huggingface.co/datasets/ProgramComputer/voxceleb/resolve/main/vox1/vox1_dev_wav_partad?download=true
     cat vox1_dev* > vox1_dev_wav.zip
     unzip vox1_dev_wav.zip
 
