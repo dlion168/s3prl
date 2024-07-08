@@ -26,7 +26,7 @@ downstream_expert:
     vad_config:
       min_sec: 32000
     
-    file_path: /path/to/VoxCeleb1
+    file_path: /groups/public/VoxCeleb1
     train_meta_data: ./downstream/sv_voxceleb1/dev_meta_data/dev_speaker_ids.txt
     dev_meta_data: ./downstream/sv_voxceleb1/dev_meta_data/dev_meta_data.txt
     test_meta_data: ./downstream/sv_voxceleb1/voxceleb1_test_v2.txt
@@ -38,7 +38,7 @@ downstream_expert:
 
   modelrc:
     module:
-      XVector  # support to [ XVector, Identity ]
+      Identity # XVector  # support to [ XVector, Identity ]
     input_dim: 512
     agg_module: SP # support for ASP / SP / AP / MP 
                    # (Attentive Statistic Pooling / Statistic Pooling / Attentive Pooling / Mean Pooling)

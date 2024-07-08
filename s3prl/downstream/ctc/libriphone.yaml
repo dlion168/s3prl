@@ -36,7 +36,7 @@ optimizer:
 downstream_expert:
   corpus:                                 
     name: 'libriphone'                   # Specify corpus
-    path: '/home/leo/d/datasets/LibriSpeech'          # Path to raw LibriSpeech dataset
+    path: '/groups/public/benchmark/LibriSpeech'          # Path to raw LibriSpeech dataset
     lexicon:
       # - downstream/ctc/lexicon/librispeech-lexicon.txt
       - downstream/ctc/lexicon/librispeech-lexicon-200k-g2p.txt
@@ -48,7 +48,7 @@ downstream_expert:
 
     bucketing: True                       # Enable/Disable bucketing 
     batch_size: 16
-    num_workers: 24
+    num_workers: 8
   
   text:
     mode: 'word'                       # 'character'/'word'/'subword'

@@ -3,10 +3,11 @@ import torch
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
-model_0 = getattr(hub, 'speechgpt')()
+model_0 = getattr(hub, 'wavlm_large')()
 model_0.to(device)
+
 wavs = [torch.randn(160000, dtype=torch.float).to(device) for _ in range(16)]
 with torch.no_grad():
-    reps = model_0(wavs)["hidden_states"]
-    print(reps[0].shape)
-    print(len(reps[0]))
+    reps = model_0(wavs)
+    print(len(reps['hidden_states']))
+    print(reps['last_hidden_state'].shape)

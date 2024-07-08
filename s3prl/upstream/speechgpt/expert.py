@@ -117,8 +117,8 @@ class UpstreamExpert(UpstreamBase):
                 count = 1
         return dup_cluster_list, duration_list
 
-    # def get_downsample_rates(self, key: str) -> int:
-    #     return 160
+    def get_downsample_rates(self, key: str) -> int:
+        return 160
 
     def forward(self, wavs):
         hidden = []
@@ -144,4 +144,4 @@ class UpstreamExpert(UpstreamBase):
         
         # Stack the padded tensors
         stacked_tensor = torch.stack(padded_tensors)
-        return {"hidden_states": stacked_tensor}
+        return {"hidden_states": (stacked_tensor), "last_hidden_state": stacked_tensor}

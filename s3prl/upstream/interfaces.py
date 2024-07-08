@@ -249,10 +249,14 @@ class Featurizer(nn.Module):
 
     def tolist(self, paired_wavs: List[Tensor], paired_feature: Tensor):
         assert paired_feature.dim() == 3, "(batch_size, max_seq_len, feat_dim)"
-        feature_len = [round(len(wav) / self.downsample_rate) for wav in paired_wavs]
+        
+        if paired_feature.shape[1] == 1:
+            feature_len = [ 1 for wav in paired_wavs]
+        else:
+            feature_len = [round(len(wav) / self.downsample_rate) for wav in paired_wavs]
         length_diff = abs(
             paired_feature.size(1)
-            - round(max([len(wav) for wav in paired_wavs]) / self.downsample_rate)
+            - max(feature_len)
         )
         assert (
             length_diff < TOLERABLE_SEQLEN_DIFF
