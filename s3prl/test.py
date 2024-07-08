@@ -3,7 +3,7 @@ import torch
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
-model_0 = getattr(hub, 'wavlm_large')()
+model_0 = getattr(hub, 'nextgpt')()
 model_0.to(device)
 
 wavs = [torch.randn(160000, dtype=torch.float).to(device) for _ in range(16)]

@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*- #
 """*********************************************************************************************"""
-#   FileName     [ upstream/NextGPT/expert.py ]
-#   Synopsis     [ the NextGPT wrapper ]
+#   FileName     [ upstream/speechgpt/expert.py ]
+#   Synopsis     [ the SpeechGPT wrapper ]
 #   Author       [ Yi-Cheng Lin (https://github.com/andi611) ]
 #   Copyright    [ Copyleft(c), Speech Lab, NTU, Taiwan ]
 """*********************************************************************************************"""
@@ -94,7 +94,7 @@ class ApplyKmeans(object):
 
 class UpstreamExpert(UpstreamBase):
     """
-    The Mockingjay wrapper
+    The SpeechGPT wrapper
     """
 
     def __init__(self, encoder_ckpt, km_ckpt, options_config=None, **kwargs):
