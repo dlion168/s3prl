@@ -1,3 +1,15 @@
+# -*- coding: utf-8 -*- #
+"""*********************************************************************************************"""
+#   FileName     [ expert.py ]
+#   Synopsis     [ the phone linear downstream wrapper ]
+#   Author       [ S3PRL ]
+#   Copyright    [ Copyleft(c), Speech Lab, NTU, Taiwan ]
+"""*********************************************************************************************"""
+
+
+###############
+# IMPORTATION #
+###############
 import os
 import math
 import torch
@@ -11,9 +23,10 @@ from torch.distributed import is_initialized
 from torch.nn.utils.rnn import pad_sequence
 #-------------#
 from ..model import *
-from .dataset import VocalTechniqueDataset
+from .dataset import PitchClassiDataset
 from argparse import Namespace
 from pathlib import Path
+
 
 class DownstreamExpert(nn.Module):
     """
@@ -29,18 +42,16 @@ class DownstreamExpert(nn.Module):
         self.modelrc = downstream_expert['modelrc']
         self.expdir = expdir
 
-        root_dir = Path(self.datarc['file_path'])
-
-        self.train_dataset = VocalTechniqueDataset(root_dir, self.datarc['meta_data'], 'train')
-        self.dev_dataset = VocalTechniqueDataset(root_dir, self.datarc['meta_data'], 'dev')
-        self.test_dataset = VocalTechniqueDataset(root_dir, self.datarc['meta_data'], 'test')
+        self.train_dataset = PitchClassiDataset(self.datarc['meta_data'], 'train')
+        self.dev_dataset = PitchClassiDataset(self.datarc['meta_data'], 'dev')
+        self.test_dataset = PitchClassiDataset(self.datarc['meta_data'], 'test')
         
         model_cls = eval(self.modelrc['select'])
         model_conf = self.modelrc.get(self.modelrc['select'], {})
         self.projector = nn.Linear(upstream_dim, self.modelrc['projector_dim'])
         self.model = model_cls(
             input_dim = self.modelrc['projector_dim'],
-            output_dim = len(self.train_dataset.class2id.keys()),
+            output_dim = len(self.train_dataset.metadata),
             **model_conf,
         )
         self.objective = nn.CrossEntropyLoss()
@@ -91,8 +102,8 @@ class DownstreamExpert(nn.Module):
         records['loss'].append(loss.item())
 
         records['filename'] += filenames
-        records['predict_technique'] += self.train_dataset.label2tech(predicted_classid.cpu().tolist())
-        records['truth_technique'] += self.train_dataset.label2tech(labels.cpu().tolist())
+        records['predict_pitch'] += self.train_dataset.label2class(predicted_classid.cpu().tolist())
+        records['truth_pitch'] += self.train_dataset.label2class(labels.cpu().tolist())
 
         return loss
 
@@ -102,7 +113,7 @@ class DownstreamExpert(nn.Module):
         for key in ["acc", "loss"]:
             average = torch.FloatTensor(records[key]).mean().item()
             logger.add_scalar(
-                f'vocalset_technique/{mode}-{key}',
+                f'nsynth_instrument/{mode}-{key}',
                 average,
                 global_step=global_step
             )
@@ -117,11 +128,11 @@ class DownstreamExpert(nn.Module):
 
         if mode in ["dev", "test"]:
             with open(Path(self.expdir) / f"{mode}_predict.txt", "w") as file:
-                lines = [f"{f} {p}\n" for f, p in zip(records["filename"], records["predict_technique"])]
+                lines = [f"{f} {p}\n" for f, p in zip(records["filename"], records["predict_pitch"])]
                 file.writelines(lines)
 
             with open(Path(self.expdir) / f"{mode}_truth.txt", "w") as file:
-                lines = [f"{f} {l}\n" for f, l in zip(records["filename"], records["truth_technique"])]
+                lines = [f"{f} {l}\n" for f, l in zip(records["filename"], records["truth_pitch"])]
                 file.writelines(lines)
 
         return save_names

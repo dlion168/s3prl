@@ -102,8 +102,8 @@ class DownstreamExpert(nn.Module):
         records['loss'].append(loss.item())
 
         records['filename'] += filenames
-        records['predict_speaker'] += self.train_dataset.label2class(predicted_classid.cpu().tolist())
-        records['truth_speaker'] += self.train_dataset.label2class(labels.cpu().tolist())
+        records['predict_instrument'] += self.train_dataset.label2class(predicted_classid.cpu().tolist())
+        records['truth_instrument'] += self.train_dataset.label2class(labels.cpu().tolist())
 
         return loss
 
@@ -128,11 +128,11 @@ class DownstreamExpert(nn.Module):
 
         if mode in ["dev", "test"]:
             with open(Path(self.expdir) / f"{mode}_predict.txt", "w") as file:
-                lines = [f"{f} {p}\n" for f, p in zip(records["filename"], records["predict_speaker"])]
+                lines = [f"{f} {p}\n" for f, p in zip(records["filename"], records["predict_instrument"])]
                 file.writelines(lines)
 
             with open(Path(self.expdir) / f"{mode}_truth.txt", "w") as file:
-                lines = [f"{f} {l}\n" for f, l in zip(records["filename"], records["truth_speaker"])]
+                lines = [f"{f} {l}\n" for f, l in zip(records["filename"], records["truth_instrument"])]
                 file.writelines(lines)
 
         return save_names
