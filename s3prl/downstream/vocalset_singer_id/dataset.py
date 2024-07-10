@@ -23,13 +23,16 @@ class SingerDataset(data.Dataset):
         self.sample_rate = 16000
         self.sample_duration = sample_duration * self.sample_rate if sample_duration else None
     
+    def label2singer(self, id_list):
+        return [self.id2class[id] for id in id_list]
+    
     def __getitem__(self, index):
         audio_path = self.metadata.iloc[index][0]
         
-        wav, sr = torchaudio.load(audio_path)
-        wav = F.resample(wav, orig_freq=sr, new_freq=16000)
-        audio = wav.squeeze(0)
-        
+        wav, sr = torchaudio.load(os.path.join(self.audio_dir, "audio", audio_path))
+        wav = torchaudio.functional.resample(wav, orig_freq=sr, new_freq=self.sample_rate)
+        audio = wav.squeeze()
+
         # sample a duration of audio from random start
         if self.sample_duration is not None:  
             # if audio is shorter than sample_duration, pad it with zeros
@@ -37,15 +40,15 @@ class SingerDataset(data.Dataset):
                 audio = F.pad(audio, (0, self.sample_duration - audio.shape[0]), 'constant', 0)
             else:
                 random_start = np.random.randint(0, audio.shape[1] - self.sample_duration)
-                audio = audio[:, random_start:random_start+self.sample_duration]
+                audio = audio[random_start:random_start+self.sample_duration]
 
         # # convert
         # audio_features = self.processor(audio, return_tensors="pt", sampling_rate=self.cfg.target_sr, padding=True).input_values[0]
         
         label = self.class2id[audio_path.split('/')[1].split('_')[0]]
         if self.return_audio_path:
-            return wav.numpy(), label, audio_path
-        return wav.numpy(), label
+            return audio.numpy(), label, audio_path
+        return audio.numpy(), label
 
     def __len__(self):
         return len(self.metadata)

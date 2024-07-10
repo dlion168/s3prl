@@ -1,33 +1,48 @@
-import torchaudio
 import numpy as np 
-from librosa.util import find_files
-from torchaudio import load
-from torch import nn
 import os 
-import pandas as pd
-from torch.utils import data
-import torch.nn.functional as F
+import torchaudio
 
 CACHE_PATH = os.path.join(os.path.dirname(__file__), '.cache/')
 
+import os
 
-class VocalTechniqueDataset(data.Dataset):
-    def __init__(self, audio_dir, metadata_dir, split, sample_duration=None, return_audio_path=True): # Singer trim?
+import numpy as np
+from torch.utils import data
+import pandas as pd
+import torch.nn.functional as F
+import json
+
+class InstrumentDataset(data.Dataset):
+    def __init__(self, metadata_dir, split, sample_duration=None, return_audio_path=True):
         # self.cfg = cfg
-        self.metadata = pd.read_csv(filepath_or_buffer=os.path.join(metadata_dir, f'{split}_t.txt'), 
-                                    names = ['audio_path'])
-        self.audio_dir = audio_dir
-        self.class2id = {'belt': 0, 'breathy': 1, 'inhaled': 2, 'lip_trill': 3, 'spoken': 4, 'straight': 5, 'trill': 6, 'trillo': 7, 'vibrato': 8, 'vocal_fry': 9}
+        self.metadata_dir = os.path.join(metadata_dir, f'nsynth-{split}/examples.json')
+        self.metadata = json.load(open(self.metadata_dir,'r'))
+        self.metadata = [(k + '.wav', v['instrument_family_str']) for k, v in self.metadata.items()]
+
+        self.audio_dir = os.path.join(metadata_dir, f'nsynth-{split}')
+        self.class2id = {
+            'bass': 0,
+            'brass': 1,
+            'flute': 2,
+            'guitar': 3,
+            'keyboard': 4,
+            'mallet': 5,
+            'organ': 6,
+            'reed': 7,
+            'string': 8,
+            'synth_lead': 9,
+            'vocal': 10
+        }
         self.id2class = {v: k for k, v in self.class2id.items()}
         self.return_audio_path = return_audio_path
         self.sample_rate = 16000
         self.sample_duration = sample_duration * self.sample_rate if sample_duration else None
-
-    def label2tech(self, id_list):
+    
+    def label2class(self, id_list):
         return [self.id2class[id] for id in id_list]
     
     def __getitem__(self, index):
-        audio_path = self.metadata.iloc[index][0]
+        audio_path = self.metadata[index][0]
         
         wav, sr = torchaudio.load(os.path.join(self.audio_dir, "audio", audio_path))
         wav = torchaudio.functional.resample(wav, orig_freq=sr, new_freq=self.sample_rate)
@@ -42,10 +57,8 @@ class VocalTechniqueDataset(data.Dataset):
                 random_start = np.random.randint(0, audio.shape[1] - self.sample_duration)
                 audio = audio[random_start:random_start+self.sample_duration]
 
-        # # convert
-        # audio_features = self.processor(audio, return_tensors="pt", sampling_rate=self.cfg.target_sr, padding=True).input_values[0]
-        
-        label = self.class2id[audio_path.split('/')[0]]
+        # label = self.class2id[audio_path.split('/')[1].split('_')[0]]
+        label = self.class2id[audio_path.rsplit('_', 2)[0]]
         if self.return_audio_path:
             return audio.numpy(), label, audio_path
         return audio.numpy(), label
@@ -55,3 +68,4 @@ class VocalTechniqueDataset(data.Dataset):
     
     def collate_fn(self, samples):
         return zip(*samples)
+

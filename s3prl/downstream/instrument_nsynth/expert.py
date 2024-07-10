@@ -23,7 +23,7 @@ from torch.distributed import is_initialized
 from torch.nn.utils.rnn import pad_sequence
 #-------------#
 from ..model import *
-from .dataset import SingerDataset
+from .dataset import InstrumentDataset
 from argparse import Namespace
 from pathlib import Path
 
@@ -42,11 +42,9 @@ class DownstreamExpert(nn.Module):
         self.modelrc = downstream_expert['modelrc']
         self.expdir = expdir
 
-        root_dir = Path(self.datarc['file_path'])
-
-        self.train_dataset = SingerDataset(root_dir, self.datarc['meta_data'], 'train')
-        self.dev_dataset = SingerDataset(root_dir, self.datarc['meta_data'], 'dev')
-        self.test_dataset = SingerDataset(root_dir, self.datarc['meta_data'], 'test')
+        self.train_dataset = InstrumentDataset(self.datarc['meta_data'], 'train')
+        self.dev_dataset = InstrumentDataset(self.datarc['meta_data'], 'dev')
+        self.test_dataset = InstrumentDataset(self.datarc['meta_data'], 'test')
         
         model_cls = eval(self.modelrc['select'])
         model_conf = self.modelrc.get(self.modelrc['select'], {})
@@ -104,8 +102,8 @@ class DownstreamExpert(nn.Module):
         records['loss'].append(loss.item())
 
         records['filename'] += filenames
-        records['predict_speaker'] += self.train_dataset.label2singer(predicted_classid.cpu().tolist())
-        records['truth_speaker'] += self.train_dataset.label2singer(labels.cpu().tolist())
+        records['predict_speaker'] += self.train_dataset.label2class(predicted_classid.cpu().tolist())
+        records['truth_speaker'] += self.train_dataset.label2class(labels.cpu().tolist())
 
         return loss
 
@@ -115,7 +113,7 @@ class DownstreamExpert(nn.Module):
         for key in ["acc", "loss"]:
             average = torch.FloatTensor(records[key]).mean().item()
             logger.add_scalar(
-                f'vocalset_singer/{mode}-{key}',
+                f'nsynth_instrument/{mode}-{key}',
                 average,
                 global_step=global_step
             )

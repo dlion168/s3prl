@@ -38,6 +38,8 @@ from s3prl.upstream.wavlm.hubconf import *
 from s3prl.upstream.nextgpt.hubconf import *
 from s3prl.upstream.pandagpt.hubconf import *
 from s3prl.upstream.speechgpt.hubconf import *
+from s3prl.upstream.imagebind.hubconf import *
+# from s3prl.upstream.mullama.hubconf import *
 
 
 def options(only_registered_ckpt: bool = False):
