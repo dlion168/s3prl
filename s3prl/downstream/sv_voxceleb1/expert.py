@@ -55,8 +55,8 @@ class DownstreamExpert(nn.Module):
         self.expdir = expdir
 
         # dataset
-        train_file_path = Path(self.datarc['file_path']) / "dev" 
-        test_file_path = Path(self.datarc['file_path']) / "test" 
+        train_file_path = Path(self.datarc['file_path']) / "dev" / "wav"
+        test_file_path = Path(self.datarc['file_path']) / "test" / "wav"
         
         train_config = {
             "vad_config": self.datarc['vad_config'],

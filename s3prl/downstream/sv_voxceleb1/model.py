@@ -133,7 +133,7 @@ class SP(nn.Module):
                 length = len(feature_BxTxH[i])
             else:
                 length = torch.nonzero(att_mask_BxT[i] < 0, as_tuple=False)[0] + 1
-            variances = torch.std(feature_BxTxH[i][:length], dim=-2)
+            variances = torch.std(feature_BxTxH[i][:length], dim=-2) if length > 1 else torch.zeros_like(feature_BxTxH[i][0])
             variance_vec_list.append(variances)
         var_vec = torch.stack(variance_vec_list)
 
