@@ -170,6 +170,7 @@ class Runner():
             layer_selection = self.args.upstream_layer_selection,
             upstream_device = self.args.device,
             normalize = self.args.upstream_feature_normalize,
+            fixed_length= self.args.fix_feature_len,
         ).to(self.args.device)
 
         return self._init_model(

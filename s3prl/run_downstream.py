@@ -68,6 +68,7 @@ def get_downstream_args():
     parser.add_argument('--upstream_feature_normalize', action='store_true', help='Specify whether to normalize hidden features before weighted sum')
     parser.add_argument('--upstream_model_name', default="model.pt", help='The name of the model file in the HuggingFace Hub repo.')
     parser.add_argument('--upstream_revision', help="The commit hash of the specified HuggingFace Repository")
+    parser.add_argument('-x', '--fix_feature_len', action='store_true', help="Fix the feature length")
 
     # experiment directory, choose one to specify
     # expname uses the default root directory: result/downstream
@@ -154,7 +155,7 @@ def main():
     logging.basicConfig(level=logging.INFO)
 
     torch.multiprocessing.set_sharing_strategy('file_system')
-    torchaudio.set_audio_backend('sox_io')
+    # torchaudio.set_audio_backend('sox_io')
     hack_isinstance()
 
     # get config and arguments

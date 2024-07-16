@@ -15,18 +15,17 @@ class UpstreamExpert(torch.nn.Module):
         self.model = WhisperModel.from_pretrained(ckpt).get_encoder()
 
     def get_downsample_rates(self, key: str = None) -> int:
-        return 320
+        return 160
 
     def forward(self, wavs):
         device = wavs[0].device
         wavs = [wav.detach().cpu().numpy() for wav in wavs]
-        input_values = self.extracter(
+        input = self.extracter(
             wavs,
-            return_tensors="pt",
-            padding=True,
-            return_attention_mask=True,
-            sampling_rate=SAMPLE_RATE,
+            return_tensors = "pt",
+            padding = "max_length",
+            return_attention_mask = True,
+            sampling_rate = SAMPLE_RATE,
         ).to(device)
-        outputs = self.model(input_values, output_hidden_states=True, return_dict=True)
-
+        outputs = self.model(input.input_features, output_hidden_states=True, return_dict=True)
         return outputs
