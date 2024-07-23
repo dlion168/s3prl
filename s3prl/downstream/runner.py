@@ -13,6 +13,7 @@ import torch
 import torchaudio
 import numpy as np
 from tqdm import tqdm
+import time
 from tensorboardX import SummaryWriter
 from torch.utils.data import DistributedSampler
 from torch.nn.parallel import DistributedDataParallel as DDP
@@ -170,7 +171,8 @@ class Runner():
             layer_selection = self.args.upstream_layer_selection,
             upstream_device = self.args.device,
             normalize = self.args.upstream_feature_normalize,
-            fixed_length= self.args.fix_feature_len,
+            fixed_length = self.args.fix_feature_len,
+            ignore_length_dif = self.args.ignore_length_dif
         ).to(self.args.device)
 
         return self._init_model(
