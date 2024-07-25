@@ -140,6 +140,7 @@ class Featurizer(nn.Module):
         layer_selection: int = None,
         normalize: bool = False,
         fixed_length: bool = False,
+        ignore_length_dif: bool = False,
         **kwargs,
     ):
         super().__init__()
@@ -169,7 +170,8 @@ class Featurizer(nn.Module):
         self.feature_selection = feature_selection
         self.layer_selection = layer_selection
         self.normalize = normalize
-        self.fixed_length= fixed_length
+        self.fixed_length = fixed_length
+        self.ignore_length_dif = ignore_length_dif
 
         feature = self._select_feature(paired_features)
         if isinstance(feature, (list, tuple)):
@@ -251,9 +253,9 @@ class Featurizer(nn.Module):
     def tolist(self, paired_wavs: List[Tensor], paired_feature: Tensor):
         assert paired_feature.dim() == 3, "(batch_size, max_seq_len, feat_dim)"
         
-        if self.fixed_length:
-            feature_len = [paired_feature.shape[1] for wav in paired_wavs]
-        else:
+        # if self.fixed_length:
+        #     feature_len = [paired_feature.shape[1] for wav in paired_wavs]
+        if not self.ignore_length_dif:
             feature_len = [round(len(wav) / self.downsample_rate) for wav in paired_wavs]
             length_diff = abs(
                 paired_feature.size(1)
@@ -262,8 +264,11 @@ class Featurizer(nn.Module):
             assert (
                 length_diff < TOLERABLE_SEQLEN_DIFF
             ), f"{length_diff} >= {TOLERABLE_SEQLEN_DIFF}"
-        feature = [f[:l] for f, l in zip(paired_feature, feature_len)]
-        return feature
+            feature = [f[:l] for f, l in zip(paired_feature, feature_len)]
+            return feature
+        else:
+            feature = [f for f in paired_feature]
+            return feature
 
     def forward(
         self,
