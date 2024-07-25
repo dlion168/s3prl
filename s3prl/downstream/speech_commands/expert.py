@@ -31,9 +31,23 @@ class DownstreamExpert(nn.Module):
 
         train_list, valid_list = split_dataset(self.datarc["speech_commands_root"])
 
-        self.train_dataset = SpeechCommandsDataset(train_list, **self.datarc)
-        self.dev_dataset = SpeechCommandsDataset(valid_list, **self.datarc)
-        self.test_dataset = SpeechCommandsTestingDataset(**self.datarc)
+        self.train_dataset = SpeechCommandsDataset(
+            train_list,
+            upstream=kwargs['upstream'],
+            features_path=kwargs['features_path'],
+            **self.datarc
+        )
+        self.dev_dataset = SpeechCommandsDataset(
+            valid_list,
+            upstream=kwargs['upstream'],
+            features_path=kwargs['features_path'],
+            **self.datarc
+        )
+        self.test_dataset = SpeechCommandsTestingDataset(            
+            upstream=kwargs['upstream'],
+            features_path=kwargs['features_path'],
+            **self.datarc
+        )
 
         model_cls = eval(self.modelrc['select'])
         model_conf = self.modelrc.get(self.modelrc['select'], {})

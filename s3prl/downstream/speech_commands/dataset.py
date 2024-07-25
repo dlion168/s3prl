@@ -1,6 +1,7 @@
 from random import randint
 from pathlib import Path
-
+import os
+import torch
 from torch.utils.data.dataset import Dataset
 from torchaudio.sox_effects import apply_effects_file
 
@@ -74,6 +75,8 @@ class SpeechCommandsDataset(SpeechCommandsBaseDataset):
 
         self.data = data
         self.sample_weights = sample_weights
+        self.upstream_name = kwargs['upstream']
+        self.features_path = kwargs['features_path']
 
     def __getitem__(self, idx):
         wav, label, stem = super().__getitem__(idx)
@@ -82,6 +85,12 @@ class SpeechCommandsDataset(SpeechCommandsBaseDataset):
         if label == self.class2index["_silence_"]:
             random_offset = randint(0, len(wav) - 16000)
             wav = wav[random_offset : random_offset + 16000]
+        
+        if self.features_path:
+            feature_path = os.path.join(self.features_path, self.upstream_name, f"{stem}.pt")
+            if os.path.exists(feature_path):
+                feature = torch.load(feature_path)
+                return feature, label, True
 
         return wav, label, stem
 

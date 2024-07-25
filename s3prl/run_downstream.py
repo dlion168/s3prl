@@ -12,6 +12,7 @@ from torch.distributed import is_initialized, get_world_size
 
 from s3prl import hub
 from s3prl.downstream.runner import Runner
+from s3prl.downstream.runner_feat import Runner as FeatRunner
 from s3prl.utility.helper import backup, get_time_tag, hack_isinstance, is_leader_process, override
 
 from huggingface_hub import HfApi, HfFolder
@@ -69,6 +70,8 @@ def get_downstream_args():
     parser.add_argument('--upstream_model_name', default="model.pt", help='The name of the model file in the HuggingFace Hub repo.')
     parser.add_argument('--upstream_revision', help="The commit hash of the specified HuggingFace Repository")
     parser.add_argument('-x', '--fix_feature_len', action='store_true', help="Fix the feature length")
+    parser.add_argument('-q', '--ignore_length_dif', action='store_true', help="Fix the feature length")
+    
 
     # experiment directory, choose one to specify
     # expname uses the default root directory: result/downstream
@@ -84,6 +87,7 @@ def get_downstream_args():
     parser.add_argument('--cache_dir', help='The cache directory for pretrained model downloading')
     parser.add_argument('--verbose', action='store_true', help='Print model infomation')
     parser.add_argument('--disable_cudnn', action='store_true', help='Disable CUDNN')
+    parser.add_argument('--features_path', type=str)
 
     args = parser.parse_args()
     backup_files = []
@@ -147,6 +151,9 @@ def get_downstream_args():
     if args.override is not None and args.override.lower() != "none":
         override(args.override, args, config)
         os.makedirs(args.expdir, exist_ok=True)
+        
+    if args.features_path:
+        os.makedirs(os.path.join(args.features_path, args.upstream), exist_ok=True)
     
     return args, config, backup_files
 
@@ -212,7 +219,10 @@ def main():
         torch.backends.cudnn.deterministic = True
         torch.backends.cudnn.benchmark = False
 
-    runner = Runner(args, config)
+    if args.features_path:
+        runner = FeatRunner(args, config)
+    else:
+        runner = Runner(args, config)
     eval(f'runner.{args.mode}')()
 
 

@@ -10,9 +10,10 @@ import numpy as np
 from torch.utils import data
 import pandas as pd
 import torch.nn.functional as F
+import torch
 
 class SingerDataset(data.Dataset):
-    def __init__(self, audio_dir, metadata_dir, split, sample_duration=None, return_audio_path=True):
+    def __init__(self, audio_dir, metadata_dir, split, sample_duration=None, return_audio_path=True, **kwargs):
         # self.cfg = cfg
         self.metadata = pd.read_csv(filepath_or_buffer=os.path.join(metadata_dir, f'{split}_s.txt'), 
                                     names = ['audio_path'])
@@ -22,6 +23,8 @@ class SingerDataset(data.Dataset):
         self.return_audio_path = return_audio_path
         self.sample_rate = 16000
         self.sample_duration = sample_duration * self.sample_rate if sample_duration else None
+        self.upstream_name = kwargs['upstream']
+        self.features_path = kwargs['features_path']
     
     def label2singer(self, id_list):
         return [self.id2class[id] for id in id_list]
@@ -46,8 +49,14 @@ class SingerDataset(data.Dataset):
         # audio_features = self.processor(audio, return_tensors="pt", sampling_rate=self.cfg.target_sr, padding=True).input_values[0]
         
         label = self.class2id[audio_path.split('/')[1].split('_')[0]]
+                
+        if self.features_path:
+            feature_path = os.path.join(self.features_path, self.upstream_name, f"{audio_path.replace('/', '-')}.pt")
+            if os.path.exists(feature_path):
+                feature = torch.load(feature_path)
+                return feature, label, True
         if self.return_audio_path:
-            return audio.numpy(), label, audio_path
+            return audio.numpy(), label, audio_path.replace('/', '-')
         return audio.numpy(), label
 
     def __len__(self):

@@ -43,11 +43,11 @@ downstream_expert:
     dev-other: ['dev-other']
     test-clean: ['test-clean']
     test-other: ['test-other']
-    num_workers: 12
+    num_workers: 8
     train_batch_size: 32
     batch_size: 32
     eval_batch_size: 1
-    libri_root: '/home/leo/d/datasets/LibriSpeech'
+    libri_root: '../../../../livingrooms/public/LibriSpeech'
     bucket_file: './data/librispeech/len_for_bucket'
     dict_path: "./downstream/asr/char.dict"
 

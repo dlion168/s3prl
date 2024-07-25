@@ -30,9 +30,27 @@ class DownstreamExpert(nn.Module):
 
         self.get_dataset()
 
-        self.train_dataset = FluentCommandsDataset(self.train_df, self.base_path, self.Sy_intent)
-        self.dev_dataset = FluentCommandsDataset(self.valid_df, self.base_path, self.Sy_intent)
-        self.test_dataset = FluentCommandsDataset(self.test_df, self.base_path, self.Sy_intent)
+        self.train_dataset = FluentCommandsDataset(
+            self.train_df, 
+            self.base_path, 
+            self.Sy_intent,
+            upstream=kwargs['upstream'],
+            features_path=kwargs['features_path'],
+        )
+        self.dev_dataset = FluentCommandsDataset(
+            self.valid_df,             
+            self.base_path, 
+            self.Sy_intent,
+            upstream=kwargs['upstream'],
+            features_path=kwargs['features_path'],
+        )
+        self.test_dataset = FluentCommandsDataset(
+            self.test_df,             
+            self.base_path, 
+            self.Sy_intent,
+            upstream=kwargs['upstream'],
+            features_path=kwargs['features_path'],
+        )
 
         model_cls = eval(self.modelrc['select'])
         model_conf = self.modelrc.get(self.modelrc['select'], {})

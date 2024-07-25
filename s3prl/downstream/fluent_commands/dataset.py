@@ -13,11 +13,13 @@ EXAMPLE_WAV_MAX_SEC = 10
 
 
 class FluentCommandsDataset(Dataset):
-    def __init__(self, df, base_path, Sy_intent):
+    def __init__(self, df, base_path, Sy_intent, **kwargs):
         self.df = df
         self.base_path = base_path
         self.max_length = SAMPLE_RATE * EXAMPLE_WAV_MAX_SEC
         self.Sy_intent = Sy_intent
+        self.upstream_name = kwargs['upstream']
+        self.features_path = kwargs['features_path']
 
     def __len__(self):
         return len(self.df)
@@ -33,6 +35,12 @@ class FluentCommandsDataset(Dataset):
         for slot in ["action", "object", "location"]:
             value = self.df.loc[idx][slot]
             label.append(self.Sy_intent[slot][value])
+        
+        if self.features_path:
+            feature_path = os.path.join(self.features_path, self.upstream_name, f"{Path(wav_path).stem}.pt")
+            if os.path.exists(feature_path):
+                feature = torch.load(feature_path)
+                return feature, label, True
 
         return wav.numpy(), np.array(label), Path(wav_path).stem
 

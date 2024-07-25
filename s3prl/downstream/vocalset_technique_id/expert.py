@@ -31,9 +31,27 @@ class DownstreamExpert(nn.Module):
 
         root_dir = Path(self.datarc['file_path'])
 
-        self.train_dataset = VocalTechniqueDataset(root_dir, self.datarc['meta_data'], 'train')
-        self.dev_dataset = VocalTechniqueDataset(root_dir, self.datarc['meta_data'], 'dev')
-        self.test_dataset = VocalTechniqueDataset(root_dir, self.datarc['meta_data'], 'test')
+        self.train_dataset = VocalTechniqueDataset(
+            root_dir, 
+            self.datarc['meta_data'], 
+            'train',
+            upstream=kwargs['upstream'],
+            features_path=kwargs['features_path'],
+        )
+        self.dev_dataset = VocalTechniqueDataset(
+            root_dir, 
+            self.datarc['meta_data'], 
+            'dev',
+            upstream=kwargs['upstream'],
+            features_path=kwargs['features_path']
+        )
+        self.test_dataset = VocalTechniqueDataset(
+            root_dir, 
+            self.datarc['meta_data'], 
+            'test',
+            upstream=kwargs['upstream'],
+            features_path=kwargs['features_path']
+        )
         
         model_cls = eval(self.modelrc['select'])
         model_conf = self.modelrc.get(self.modelrc['select'], {})

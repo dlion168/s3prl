@@ -8,7 +8,8 @@
 import json
 from pathlib import Path
 from os.path import join as path_join
-
+import os
+import torch
 import torchaudio
 from torch.utils.data import Dataset
 from torchaudio.transforms import Resample
@@ -17,7 +18,7 @@ SAMPLE_RATE = 16000
 
 
 class IEMOCAPDataset(Dataset):
-    def __init__(self, data_dir, meta_path, pre_load=True):
+    def __init__(self, data_dir, meta_path, pre_load=True, **kwargs):
         self.data_dir = data_dir
         self.pre_load = pre_load
         with open(meta_path, 'r') as f:
@@ -31,6 +32,8 @@ class IEMOCAPDataset(Dataset):
         self.resampler = Resample(origin_sr, SAMPLE_RATE)
         if self.pre_load:
             self.wavs = self._load_all()
+        self.upstream_name = kwargs['upstream']
+        self.features_path = kwargs['features_path']
 
     def _load_wav(self, path):
         wav, _ = torchaudio.load(path_join(self.data_dir, path))
@@ -51,7 +54,12 @@ class IEMOCAPDataset(Dataset):
             wav = self.wavs[idx]
         else:
             wav = self._load_wav(self.meta_data[idx]['path'])
-        return wav.numpy(), label, Path(self.meta_data[idx]['path']).stem
+        if self.features_path:
+            feature_path = os.path.join(self.features_path, self.upstream_name, f"{self.meta_data[idx]['path'].replace('/', '-')}.pt")
+            if os.path.exists(feature_path):
+                feature = torch.load(feature_path)
+                return feature, label, True
+        return wav.numpy(), label, self.meta_data[idx]['path'].replace('/', '-') #Path(self.meta_data[idx]['path']).stem
 
     def __len__(self):
         return len(self.meta_data)
