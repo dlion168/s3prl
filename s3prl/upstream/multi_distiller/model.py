@@ -84,6 +84,7 @@ class MultiDistillerConfig:
         self.teacher_names = config.get('teacher_names')
         self.translator_kwargs = config.get('translator_kwargs')
         self.translator_type = config.get('translator_type')
+        self.initialize_from = config.get('initialize_from')
 
 class MultiDistillerModel(nn.Module):
     """

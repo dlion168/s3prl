@@ -16,7 +16,7 @@ import torchaudio
 import torchaudio.transforms as transforms
 from transformers import ASTForAudioClassification
 from transformers import AutoProcessor, ASTModel
-
+import pdb
 
 # from audiossl.models.atst.atst import ATST
 # from ......MERT.mert_fairseq.models.mert.mert_model import MERTConfig
@@ -340,7 +340,7 @@ class MultiDistillerForPretrain(nn.Module):
         super().__init__()
         self.config = config
         self.distiller = MultiDistillerModel(config)
-        print(f"the distiller model arch inside MultiDistillerForPretrain is {self.distiller}")
+        #print(f"the distiller model arch inside MultiDistillerForPretrain is {self.distiller}")
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.teacher_config = teacher_config
         print(f"the teacher config inside MultiDistillerForPretrain is {self.teacher_config}")
@@ -394,27 +394,39 @@ class MultiDistillerForPretrain(nn.Module):
             print("[DistillerForPretrain] - Enabled cosine similarity loss.")
         
         # Ensure that we can only load weights from hubert_base or mert_v0_public
-        for model_to_initialize in self.teachers:
-            if model_to_initialize == 'ast':
-                raise AssertionError("[Error] Cannot initialize weights from 'ast' model. The student's architecture is compatible only with 'hubert_base' or 'mert_v0_public'.")
-            elif model_to_initialize == 'hubert_base':
-                print(f"Initializing student model from {model_to_initialize}...")
-                self.load_teacher_weights('hubert_base')
-            elif model_to_initialize == 'mert_v0_public':
-                print(f"Initializing student model from {model_to_initialize}...")
-                self.load_teacher_weights('mert_v0_public')
+        model_to_initialize = self.config.initialize_from[0]
+        if model_to_initialize == 'ast':
+            raise AssertionError("[Error] Cannot initialize weights from 'ast' model. The student's architecture is compatible only with 'hubert_base' or 'mert_v0_public'.")
+        elif model_to_initialize == 'hubert_base':
+            print(f"Initializing student model from {model_to_initialize}...")
+            self.load_teacher_weights('hubert_base')
+        elif model_to_initialize == 'mert_v0_public':
+            print(f"Initializing student model from {model_to_initialize}...")
+            self.load_teacher_weights('mert_v0_public')
 
 
-    def load_teacher_weights(self, teacher_name):
+    def load_teacher_weights(self, teacher_name, device="cuda"):
         """
         Load the weights from a specified teacher model (hubert_base or mert_v0_public).
         """
         teacher_model = self.teacher_models.get(teacher_name)
         if teacher_model is None:
-            raise ValueError(f"[Error] Teacher model '{teacher_name}' not found in the loaded teacher models.")
+            print(f"teacher_name is {teacher_name} and self.config.initialize_from is {self.config.initialize_from[0]} ")
+            if teacher_name == self.config.initialize_from[0]:
+                if teacher_name == "mert_v0_public":
+                    temp_config = AutoConfig.from_pretrained("m-a-p/MERT-v0-public", trust_remote_code=True)
+                    temp_config.output_hidden_states = True  # Enable hidden states in the output
+                    teacher_model = AutoModel.from_pretrained("m-a-p/MERT-v0-public", config=temp_config, trust_remote_code=True).to(device)
+                    disable_MERT_encoder_dropout(teacher_model)
+                if teacher_name == "hubert_base":
+                    teacher_model = torch.hub.load("s3prl/s3prl","hubert_base").to(device)
+                    teacher_model.model.encoder.layerdrop = 0
+                    print("[HuBERT] - Disabled teacher's encoder layerdrop")
+            else:
+                raise ValueError(f"[Error] Teacher model '{teacher_name}' not found in the loaded teacher models.")
 
         # Example: loading weights from hubert_base or mert_v0_public for feature extractor
-        if teacher_name == 'hubert_base' or teacher_name == 'mert_v0_public':
+        if teacher_name == 'hubert_base':
             print(f"[DistillerForPretrain] - Loading weights from {teacher_name}")
             
             # Load weights for feature extractor
@@ -438,6 +450,95 @@ class MultiDistillerForPretrain(nn.Module):
                     self.distiller.encoder.layers[l].load_state_dict(
                         teacher_model.model.encoder.layers[l].state_dict()
                     )
+
+        if teacher_name == 'mert_v0_public':
+            print(f"[DistillerForPretrain] - Loading weights from {teacher_name}")
+            # Load weights for feature extractor
+            # Retrieve the state_dict of the MERT feature extractor
+            state_dict = teacher_model.feature_extractor.state_dict()
+
+            # Modify the keys to match distilHuBERT's expected layer names
+            new_state_dict = {}
+            for key, value in state_dict.items():
+                # Convert "conv_layers.0.conv.weight" to "conv_layers.0.0.weight"
+                # Convert "conv_layers.0.layer_norm.weight" to "conv_layers.0.2.weight" (assuming layer_norm is at index 2)
+                if "conv_layers" in key:
+                    # Handle the convolution layers
+                    if "conv.weight" in key:
+                        new_key = key.replace("conv.weight", "0.weight")
+                    # Handle the normalization layers
+                    elif "layer_norm" in key:
+                        new_key = key.replace("layer_norm.weight", "2.weight").replace("layer_norm.bias", "2.bias")
+                    # Handle activation layers if needed (you can add this if distilHuBERT expects it)
+                    else:
+                        new_key = key
+                    new_state_dict[new_key] = value
+                else:
+                    new_state_dict[key] = value
+
+
+            if self.config.init_teacher_conv_layers:
+                print(f"[DistillerForPretrain] - Initializing feature extractor from {teacher_name}")
+                self.distiller.feature_extractor.load_state_dict(new_state_dict)
+
+                self.distiller.post_extract_proj.load_state_dict(
+                teacher_model.feature_projection.projection.state_dict()
+                )
+            
+
+            # Load weights for encoder layers
+            if self.config.init_teacher_encoder_layers:
+                # MERT has `conv`, `padding`, `activation`, distilHuBERT has indices `0`, `1`, `2` in a Sequential
+                mert_pos_conv = teacher_model.encoder.pos_conv_embed.state_dict()
+
+                # Decompose the weight_g and weight_v to get the actual weights
+                #conv_weight_g = mert_pos_conv['conv.weight_g']
+                #conv_weight_v = mert_pos_conv['conv.weight_v']
+                
+                #conv_weight = (conv_weight_g / conv_weight_v.norm(dim=1, keepdim=True)) * conv_weight_v # ->
+                # -> check: https://pytorch.org/docs/2.3/generated/torch.nn.utils.weight_norm.html
+
+
+                # Create a new state_dict for distilHuBERT by mapping the keys
+                # Create a new state_dict to map MERT's keys to distilHuBERT's keys
+                pos_conv_dict = {
+                    '0.bias': mert_pos_conv['conv.bias'],            # Mapping MERT's conv.bias to 0.bias
+                    '0.weight_g': mert_pos_conv['conv.weight_g'],    # Mapping MERT's weight_g to 0.weight_g
+                    '0.weight_v': mert_pos_conv['conv.weight_v']     # Mapping MERT's weight_v to 0.weight_v
+                }
+        
+
+                print(f"[DistillerForPretrain] - Loading encoder positional convolution from MERT")
+                self.distiller.encoder.pos_conv.load_state_dict(pos_conv_dict)
+                
+                print(f"[DistillerForPretrain] - Loading encoder layers from MERT")
+                for l in range(self.config.encoder_layers):
+                    # Mapping MERT's HubertEncoderLayer to distilHuBERT's TransformerSentenceEncoderLayer
+                    mert_encoder_layer = teacher_model.encoder.layers[l].state_dict()
+                    # Create a new state dict with mapped keys for distilHuBERT
+                    new_encoder_layer_dict = {}
+                    for key, value in mert_encoder_layer.items():
+                        # Rename attention block
+                        if 'attention.' in key:
+                            new_key = key.replace('attention.', 'self_attn.')
+                        # Rename layer_norm to self_attn_layer_norm
+                        elif 'layer_norm' in key and 'final_layer_norm' not in key:
+                            new_key = key.replace('layer_norm', 'self_attn_layer_norm')
+                        elif 'final_layer_norm' in key:
+                            new_key = key  # No changes for final_layer_norm
+                        # Rename feed forward layers
+                        elif 'feed_forward.intermediate_dense' in key:
+                            new_key = key.replace('feed_forward.intermediate_dense', 'fc1')
+                        elif 'feed_forward.output_dense' in key:
+                            new_key = key.replace('feed_forward.output_dense', 'fc2')
+                        else:
+                            new_key = key  # If no changes are needed, keep the key the same
+                        # Add the mapped key and value to the new dict
+                        new_encoder_layer_dict[new_key] = value
+
+
+
+                    self.distiller.encoder.layers[l].load_state_dict(new_encoder_layer_dict)
 
 
     def forward(
@@ -480,8 +581,6 @@ class MultiDistillerForPretrain(nn.Module):
                         ]
                         teachers_hidden_states[model_name] = torch.stack(teacher_hiddens, dim=1)
 
-            import pdb
-            pdb.set_trace()
 
         # Compute all objectives
         (

@@ -92,7 +92,19 @@ def get_pretrain_args():
         args = update_args(args, ckpt['Args'])
         os.makedirs(args.expdir, exist_ok=True)
         args.init_ckpt = ckpt_pth
-        config = ckpt['Config']
+        #config = ckpt['Config'] # fix because the multidistiller saved it wrongly..
+        upstream_dirs = [u for u in os.listdir('pretrain/') if re.search(f'^{u}_|^{u}$', args.upstream)]
+        assert len(upstream_dirs) == 1
+        print(f"RUNNING NORMAL LOAD OF CONFIG FILE IN past_exp PART BECAUSE THE MULTIDISTILLER DID NOT SAVED CONFIG STUFF PROPERLY")
+        print(f"you need to ERASE THIS HACK LATER ON AND FIX THE CONFIG FILE SAVING INSIDE THE ckpt IN THE MULTIDISTILLER LATER ON!")
+        if args.config is None:
+            args.config = f'pretrain/{upstream_dirs[0]}/config_runner.yaml'
+        with open(args.config, 'r') as file:
+            config = yaml.load(file, Loader=yaml.FullLoader)
+        if os.path.isfile(args.config):
+            copyfile(args.config, f'{args.expdir}/config_runner.yaml')
+        else:
+            raise FileNotFoundError('Wrong file path for runner config.')
 
     else:
         print('[Runner] - Start a new experiment')
