@@ -211,7 +211,7 @@ class UpstreamPretrainExpert(nn.Module):
         print("[UpstreamPretrainExpert] - Initializing model...")
         model_config = MultiDistillerConfig(self.upstream_config["multi_distiller"])
         self.model = MultiDistillerForPretrain(
-            model_config, edict(self.upstream_config["teacher"])
+            model_config, edict(self.upstream_config["teacher"]) ### here we get the multidistiller part and the teacher part of the file
         )
 
         if self.multi_gpu:
@@ -340,11 +340,12 @@ class MultiDistillerForPretrain(nn.Module):
         super().__init__()
         self.config = config
         self.distiller = MultiDistillerModel(config)
-        print(f"the distiller config inside MultiDistillerForPretrain is {self.distiller}")
+        print(f"the distiller model arch inside MultiDistillerForPretrain is {self.distiller}")
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.teacher_config = teacher_config
         print(f"the teacher config inside MultiDistillerForPretrain is {self.teacher_config}")
         self.teachers = teacher_config.models  # Expecting a list of teacher model names
+        
 
         # Dictionary to store teacher models and processors
         self.teacher_models = {}
@@ -374,11 +375,12 @@ class MultiDistillerForPretrain(nn.Module):
                 self.teacher_processors[model_name] = teacher_3_processor
             else:
                 print(f"Warning: Unknown teacher model {model_name} specified.")
-
+            
+        
         # Freeze all teacher models
         for teacher in self.teacher_models.values():
             freeze_model(teacher)
-
+        
         # Initialize loss function
         if config.loss_type == "l1":
             self.loss_func = nn.L1Loss(reduction="none")
@@ -390,26 +392,53 @@ class MultiDistillerForPretrain(nn.Module):
         self.cosine_loss = config.cosine_loss
         if self.cosine_loss > 0:
             print("[DistillerForPretrain] - Enabled cosine similarity loss.")
+        
+        # Ensure that we can only load weights from hubert_base or mert_v0_public
+        for model_to_initialize in self.teachers:
+            if model_to_initialize == 'ast':
+                raise AssertionError("[Error] Cannot initialize weights from 'ast' model. The student's architecture is compatible only with 'hubert_base' or 'mert_v0_public'.")
+            elif model_to_initialize == 'hubert_base':
+                print(f"Initializing student model from {model_to_initialize}...")
+                self.load_teacher_weights('hubert_base')
+            elif model_to_initialize == 'mert_v0_public':
+                print(f"Initializing student model from {model_to_initialize}...")
+                self.load_teacher_weights('mert_v0_public')
 
-        if config.init_teacher_conv_layers:
-            print("[DistillerForPretrain] - Initializing feature extractor from teacher")
-            self.distiller.feature_extractor.load_state_dict(
-                self.teacher_models['hubert_base'].model.feature_extractor.state_dict()
-            )
-            if self.distiller.post_extract_proj is not None:
-                self.distiller.post_extract_proj.load_state_dict(
-                    self.teacher_models['hubert_base'].model.post_extract_proj.state_dict()
-                )
 
-        if config.init_teacher_encoder_layers:
-            print("[DistillerForPretrain] - Initializing encoder from teacher")
-            self.distiller.encoder.pos_conv.load_state_dict(
-                self.teacher_models['hubert_base'].model.encoder.pos_conv.state_dict()
-            )
-            for l in range(config.encoder_layers):
-                self.distiller.encoder.layers[l].load_state_dict(
-                    self.teacher_models['hubert_base'].model.encoder.layers[l].state_dict()
+    def load_teacher_weights(self, teacher_name):
+        """
+        Load the weights from a specified teacher model (hubert_base or mert_v0_public).
+        """
+        teacher_model = self.teacher_models.get(teacher_name)
+        if teacher_model is None:
+            raise ValueError(f"[Error] Teacher model '{teacher_name}' not found in the loaded teacher models.")
+
+        # Example: loading weights from hubert_base or mert_v0_public for feature extractor
+        if teacher_name == 'hubert_base' or teacher_name == 'mert_v0_public':
+            print(f"[DistillerForPretrain] - Loading weights from {teacher_name}")
+            
+            # Load weights for feature extractor
+            if self.config.init_teacher_conv_layers:
+                print(f"[DistillerForPretrain] - Initializing feature extractor from {teacher_name}")
+                self.distiller.feature_extractor.load_state_dict(
+                    teacher_model.model.feature_extractor.state_dict()
                 )
+                if self.distiller.post_extract_proj is not None:
+                    self.distiller.post_extract_proj.load_state_dict(
+                        teacher_model.model.post_extract_proj.state_dict()
+                    )
+            
+            # Load weights for encoder layers
+            if self.config.init_teacher_encoder_layers:
+                print(f"[DistillerForPretrain] - Initializing encoder from {teacher_name}")
+                self.distiller.encoder.pos_conv.load_state_dict(
+                    teacher_model.model.encoder.pos_conv.state_dict()
+                )
+                for l in range(self.config.encoder_layers):
+                    self.distiller.encoder.layers[l].load_state_dict(
+                        teacher_model.model.encoder.layers[l].state_dict()
+                    )
+
 
     def forward(
         self,
