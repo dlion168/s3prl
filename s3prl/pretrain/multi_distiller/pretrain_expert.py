@@ -18,6 +18,66 @@ from transformers import ASTForAudioClassification
 from transformers import AutoProcessor, ASTModel
 import pdb
 
+
+
+class TemporalAligner(nn.Module):
+    def __init__(self, max_length_in_seconds=10, input_sample_rate=16000, distilhubert_frame_shift=20, ssast_frame_shift=10):
+        """
+        TemporalAligner for aligning the time dimension of SSAST and distilHuBERT.
+        
+        Args:
+            max_length_in_seconds: Maximum length for SSAST (in seconds).
+            input_sample_rate: The sample rate of the input audio (default 16 kHz).
+            distilhubert_frame_shift: The frame shift (in ms) for distilHuBERT features.
+            ssast_frame_shift: The frame shift (in ms) for SSAST features.
+        """
+        super(TemporalAligner, self).__init__()
+
+        # Compute the number of samples for SSAST's max input length
+        self.max_length_in_samples = max_length_in_seconds * input_sample_rate
+        
+        # Frame shifts in samples for SSAST and distilHuBERT
+        self.distilhubert_frame_shift_samples = int((distilhubert_frame_shift / 1000) * input_sample_rate)
+        self.ssast_frame_shift_samples = int((ssast_frame_shift / 1000) * input_sample_rate)
+        
+        # Average pooling for temporal downsampling (matching distilHuBERT with SSAST)
+        self.temporal_pooling = nn.AvgPool1d(kernel_size=2, stride=2)
+    
+    def forward(self, ssast_features, distilhubert_features):
+        """
+        Align the SSAST and distilHuBERT features.
+        
+        Args:
+            ssast_features: The feature tensor from SSAST (batch, time, feature_dim).
+            distilhubert_features: The feature tensor from distilHuBERT (batch, time, feature_dim).
+            
+        Returns:
+            Aligned distilHuBERT features cropped and temporally downsampled.
+        """
+        # Step 1: Perform temporal downsampling of SSAST features
+        ssast_features_pooled = self.temporal_pooling(ssast_features.transpose(1, 2)).transpose(1, 2)
+        
+        # Step 2: Crop distilHuBERT features if they exceed the SSAST max length
+        # Determine the maximum number of frames SSAST can process (10 seconds)
+        max_frames_ssast = ssast_features_pooled.shape[1]
+        max_frames_distilhubert = distilhubert_features.shape[1]
+        
+        # Crop distilHuBERT features to match the SSAST max frames
+        if max_frames_distilhubert > max_frames_ssast:
+            distilhubert_features_cropped = distilhubert_features[:, :max_frames_ssast, :]
+        else:
+            distilhubert_features_cropped = distilhubert_features
+        
+        if max_frames_distilhubert < max_frames_ssast:
+            ssast_features_pooled = ssast_features_pooled[:, :max_frames_distilhubert, :]
+    
+        
+        return ssast_features_pooled, distilhubert_features_cropped
+
+
+
+
+
 # from audiossl.models.atst.atst import ATST
 # from ......MERT.mert_fairseq.models.mert.mert_model import MERTConfig
 
@@ -362,14 +422,25 @@ class MultiDistillerForPretrain(nn.Module):
             elif model_name == 'mert_v0_public':
                 temp_config = AutoConfig.from_pretrained("m-a-p/MERT-v0-public", trust_remote_code=True)
                 temp_config.output_hidden_states = True  # Enable hidden states in the output
-                teacher_2 = AutoModel.from_pretrained("m-a-p/MERT-v0-public", config=temp_config, trust_remote_code=True).to(device)
+                teacher_2 = AutoModel.from_pretrained("m-a-p/MERT-v0-public", config=temp_config, trust_remote_code=True, output_hidden_states=True).to(device)
                 disable_MERT_encoder_dropout(teacher_2)
                 self.teacher_models[model_name] = teacher_2
             elif model_name == 'ast':
                 temp_config = AutoConfig.from_pretrained("MIT/ast-finetuned-audioset-10-10-0.4593")
                 temp_config.output_hidden_states = True  # Enable output of hidden states
+                self.temporal_alignment = TemporalAligner()
+                #temp_config.max_length = 1598
+                temp_config.ignore_mismatched_sizes = True
                 teacher_3 = ASTModel.from_pretrained("MIT/ast-finetuned-audioset-10-10-0.4593", config=temp_config).to(device)
                 teacher_3_processor = AutoProcessor.from_pretrained("MIT/ast-finetuned-audioset-10-10-0.4593")
+                print("teacher_3_processor needs to be updated!")
+                teacher_3_processor.do_normalize = True # I need to modify this later as well.
+                print(f"ONCE THIS IS DONE I CAN THEN DISTILL.....")
+                teacher_3_processor.return_attention_mask = True
+                #teacher_3_processor.max_length = 1598
+                teacher_3_processor.ignore_mismatched_sizes = True
+                ####  ########
+                print(f"WE NEED TO UNDERSTAND WELL THIS AUTOPROCESSOR!!!.")
                 disable_AST_encoder_dropout(teacher_3)
                 self.teacher_models[model_name] = teacher_3
                 self.teacher_processors[model_name] = teacher_3_processor
@@ -569,8 +640,9 @@ class MultiDistillerForPretrain(nn.Module):
                     elif model_name == 'mert_v0_public':
                         teacher_hiddens = teacher(wave_orig)
                     elif model_name == 'ast':
-                        inputs = self.teacher_processors[model_name](wave_orig.cpu().numpy(), sampling_rate=16000, return_tensors="pt")
+                        inputs = self.teacher_processors[model_name](wave_orig.cpu().numpy(), sampling_rate=16000, return_tensors="pt",return_attention_mask=True)
                         inputs = {key: value.to('cuda:0') for key, value in inputs.items()}
+
                         teacher_hiddens = teacher(**inputs)
 
                     # Extract hidden states based on task embedding type
@@ -662,12 +734,29 @@ class MultiDistillerForPretrain(nn.Module):
         rec_layer_loss_dict = {}
         sim_layer_loss_dict = {}
 
-        
+        #print(f"fix here for when you use more teachers....")
 
         # Iterate over each teacher's predictions and targets
-        for teacher_key in pred.keys():
-            teacher_pred = pred[teacher_key]  # Prediction from the current teacher
+        for teacher_key in target.keys(): ## on the meantime.... this needs to be fixed
+            teacher_pred = pred    # [teacher_key]  # Prediction from the current teacher
             teacher_target = target[teacher_key]  # Target corresponding to the current teacher
+            
+            aligned_preds = []  # To store aligned student features
+            aligned_targets = []  # To store aligned teacher features
+
+            for i in range(pred.shape[1]): ### do this outside... is better and more efficient, capitalize one of the for already being done outside...
+                align_teacher, align_student = self.temporal_alignment(teacher_target[:,i,:,:], teacher_pred[:,i,:,:])
+                # Append the aligned features to the lists
+                aligned_preds.append(align_student.unsqueeze(1))  # Add back the layer dimension
+                aligned_targets.append(align_teacher.unsqueeze(1))  # Add back the layer dimension
+
+            # Concatenate aligned layers back to 4D tensors (batch, layers, time, feature_dim)
+            teacher_pred = torch.cat(aligned_preds, dim=1)
+            teacher_target = torch.cat(aligned_targets, dim=1)
+                    
+
+
+
 
             # Ensure shapes match
             assert teacher_pred.shape == teacher_target.shape, (teacher_pred.shape, teacher_target.shape)

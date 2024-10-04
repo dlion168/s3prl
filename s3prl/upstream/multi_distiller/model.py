@@ -181,11 +181,11 @@ class MultiDistillerModel(nn.Module):
         #     'mert_v0_public': FeatureTranslator(feat_emb_dim, config.mert_hidden_size),
         #     'ast': FeatureTranslator(feat_emb_dim, config.ast_hidden_size)
         # })
-        if self.target_feature_sizes:
-            translator_kwargs = {} if config.translator_kwargs is None else config.translator_kwargs
-            translator_kwargs["input_size"] = self.backbone_feature_size
-            translator_kwargs["target_model_names"] = self.teacher_names
-            self.translator = build_feature_translator(config.translator_type, **translator_kwargs)
+        #if self.target_feature_sizes:
+            #translator_kwargs = {} if config.translator_kwargs is None else config.translator_kwargs
+            #translator_kwargs["input_size"] = self.backbone_feature_size
+            #translator_kwargs["target_model_names"] = self.teacher_names
+            #self.translator = build_feature_translator(config.translator_type, **translator_kwargs)
 
     def forward_feature(self, wave, pad_mask):
         """Forward feature extractor"""
@@ -252,7 +252,7 @@ class MultiDistillerModel(nn.Module):
             feat_final = feat_final.unsqueeze(1)
         # feat_final: B x N x T x D or B x 1 x T x D
 
-        pad_mask = pad_mask.unsqueeze(1).expand(-1, n_sz, -1).reshape(b_sz * n_sz, t_sz)
+        pad_mask = pad_mask.unsqueeze(1).expand(-1, n_sz, -1).reshape(b_sz * n_sz, t_sz) ### to mask on time dim,.
         # BN x T
         feat_final = feat_final.reshape(b_sz * n_sz, t_sz, -1)
         # BN x T x D
@@ -286,12 +286,16 @@ class MultiDistillerModel(nn.Module):
             )
             # B x N x T x D
 
-        translated_predictions = self.translator(pred, self.teacher_names) 
+        #translated_predictions = self.translator(pred, self.teacher_names) 
 
+        # if get_hidden:
+        #     return feat, feat_final, translated_predictions, pad_mask, layer_hiddens
+        # else:
+        #     return feat, feat_final, translated_predictions, pad_mask
         if get_hidden:
-            return feat, feat_final, translated_predictions, pad_mask, layer_hiddens
+            return feat, feat_final, pred, pad_mask, layer_hiddens
         else:
-            return feat, feat_final, translated_predictions, pad_mask
+            return feat, feat_final, pred, pad_mask
 
     def cal_pad_mask(self, pad_mask, max_len):
         """Calculates pad mask after conv."""
