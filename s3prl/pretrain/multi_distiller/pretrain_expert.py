@@ -269,7 +269,7 @@ class UpstreamPretrainExpert(nn.Module):
         self._get_train_dataloader()
 
         print("[UpstreamPretrainExpert] - Initializing model...")
-        model_config = MultiDistillerConfig(self.upstream_config["multi_distiller"])
+        model_config = MultiDistillerConfig(self.upstream_config["multi_distiller"],**datarc)
         self.model = MultiDistillerForPretrain(
             model_config, edict(self.upstream_config["teacher"]) ### here we get the multidistiller part and the teacher part of the file
         )
@@ -435,10 +435,14 @@ class MultiDistillerForPretrain(nn.Module):
                 teacher_3_processor = AutoProcessor.from_pretrained("MIT/ast-finetuned-audioset-10-10-0.4593")
                 print("teacher_3_processor needs to be updated!")
                 teacher_3_processor.do_normalize = True # I need to modify this later as well.
+                teacher_3_processor.mean = self.config.fbank_mean
+                teacher_3_processor.std = self.config.fbank_std
+                print(f"teacher_3_processor is {teacher_3_processor}")
+
                 print(f"ONCE THIS IS DONE I CAN THEN DISTILL.....")
                 teacher_3_processor.return_attention_mask = True
                 #teacher_3_processor.max_length = 1598
-                teacher_3_processor.ignore_mismatched_sizes = True
+                #teacher_3_processor.ignore_mismatched_sizes = True
                 ####  ########
                 print(f"WE NEED TO UNDERSTAND WELL THIS AUTOPROCESSOR!!!.")
                 disable_AST_encoder_dropout(teacher_3)

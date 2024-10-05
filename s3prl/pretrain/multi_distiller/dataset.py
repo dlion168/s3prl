@@ -37,6 +37,8 @@ class OnlineWaveDataset(WaveDataset):
             **kwargs
         )
         self.target_level = target_level
+        self.wav_mean = kwargs.get("wav_mean", None)
+        self.wav_std = kwargs.get("wav_std", None)
 
     def _load_feat(self, feat_path):
         if self.libri_root is None:
@@ -72,7 +74,7 @@ class OnlineWaveDataset(WaveDataset):
                 # Ensure the waveform has at least 2 dimensions (for compatibility with Conv1d)
 
 
-                x_batch.append(waveform)
+                x_batch.append(waveform - waveform.mean()) ## modified to maintain setup of AST and newer audio processing task. This normalization is useful.
 
             # Pad the sequences to the length of the longest sequence
             x_pad_batch = pad_sequence(x_batch, batch_first=True)
