@@ -101,6 +101,7 @@ class DownstreamExpert(nn.Module):
         decoder_args = self.datarc.get("decoder_args")
         self.decoder = get_decoder(decoder_args, self.dictionary)
         self.register_buffer("best_score", torch.ones(1) * 100)
+        self.kwargs = kwargs
 
     # Interface
     def get_dataloader(self, split):
@@ -129,7 +130,14 @@ class DownstreamExpert(nn.Module):
             setattr(
                 self,
                 f"{split}_dataset",
-                SequenceDataset(split, batch_size, self.dictionary, **self.datarc),
+                SequenceDataset(
+                    split, 
+                    batch_size, 
+                    self.dictionary, 
+                    upstream=self.kwargs['upstream'],
+                    features_path=self.kwargs['features_path'], 
+                    **self.datarc
+                ),
             )
 
         if split == "train":

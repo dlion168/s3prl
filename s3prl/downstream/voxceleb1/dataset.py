@@ -20,7 +20,7 @@ CACHE_PATH = os.path.join(os.path.dirname(__file__), '.cache/')
 
 # Voxceleb 1 Speaker Identification
 class SpeakerClassifiDataset(Dataset):
-    def __init__(self, mode, file_path, meta_data, max_timestep=None):
+    def __init__(self, mode, file_path, meta_data, max_timestep=None, **kwargs):
 
         self.root = file_path
         self.speaker_num = 1251
@@ -42,6 +42,8 @@ class SpeakerClassifiDataset(Dataset):
 
         self.dataset = dataset
         self.label = self.build_label(self.dataset)
+        self.upstream_name = kwargs['upstream']
+        self.features_path = kwargs['features_path']
 
     # file_path/id0001/asfsafs/xxx.wav
     def build_label(self, train_path_list):
@@ -117,6 +119,15 @@ class SpeakerClassifiDataset(Dataset):
             return Path("-".join((Path(path).parts)[-3:])).stem
 
         path = self.dataset[idx]
+        try:
+            if self.features_path and length < self.max_timestep:
+                feature_path = os.path.join(self.features_path, self.upstream_name, f"{path2name(path)}.pt")
+                if os.path.exists(feature_path):
+                    feature = torch.load(feature_path)
+                    return feature, self.label[idx], True
+        except:
+            print(f"{path2name(path)}.pt")
+        
         return wav.numpy(), self.label[idx], path2name(path)
         
     def collate_fn(self, samples):

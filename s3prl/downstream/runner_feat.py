@@ -190,7 +190,7 @@ class Runner():
         model = Downstream(
             upstream_dim = self.featurizer.model.output_dim,
             upstream_rate = self.featurizer.model.downsample_rate,
-            **self.config,
+            **dict(self.config, sample_rate=self.upstream.model.sample_rate),
             **vars(self.args)
         ).to(self.args.device)
 
@@ -293,65 +293,70 @@ class Runner():
                         break
                     global_step = pbar.n + 1
                     
+                    file_ids = others[0] if self.args.downstream=="sv_voxceleb1" else others[-1] 
+                    
                     with torch.cuda.amp.autocast(enabled=amp):
-                        if self.args.features_path and all(i == True for i in others[-1]):
-                            # "wavs" is overloaded into saved features here
-                            # can be list of Tensors, or list of list of Tensors
-                            if isinstance(wavs[0], (list, tuple)):
-                                features= [torch.stack(layer).to(self.args.device) for layer in zip(*wavs)]
-                            else:
-                                features = torch.stack(wavs).to(self.args.device)
-                        elif all(type(i) == str for i in others[-1]):
-                            wavs = [torch.FloatTensor(wav).to(self.args.device) for wav in wavs]
-                            
-                            if self.upstream.trainable:
-                                features = self.upstream.model(wavs)
-                            else:
-                                with torch.no_grad():
-                                    features = self.upstream.model(wavs)
-                            features = self.featurizer.model(wavs, features)
-                            if self.args.features_path:
-                                show(f"[Runner] - Save features of batch no. {batch_id}")
-                                assert isinstance(others[-1][0], str)
-                                for i, names_k in enumerate(others[-1]):
-                                    save_target = features[i].detach().cpu()
-                                    torch.save(save_target, f"{self.args.features_path}/{self.args.upstream}/{names_k}.pt")                
-                        else:
-                            print(others)
-                            features = wavs
-                            ids = []
-                            wavs = []
-                            for i in range(len(features)):
-                                if len(features[i].shape) == 1:
-                                    wavs.append(features[i])
-                                    ids.append(i)
-                            wavs = [torch.FloatTensor(wav).to(self.args.device) for wav in wavs]
-                            
-                            if self.upstream.trainable:
-                                part_features = self.upstream.model(wavs)
-                            else:
-                                with torch.no_grad():
-                                    part_features = self.upstream.model(wavs)                          
-                            part_features = self.featurizer.model(wavs, part_features)
-                            
-                            for i, id in enumerate(ids):
-                                features[id] = part_features[i]
-                            features.to(self.args.device)
-                            
-                            if self.args.features_path:
-                                show(f"[Runner] - Save features of batch no. {batch_id}")
-                                # assert isinstance(others[-1][0], str)
-                                # with torch.no_grad():
-                                    # features = self.featurizer.model._select_feature(features)
-                                    # if isinstance(features, (list, tuple)):
-                                    #     features = features[self.args.upstream_layer_selection]
-                                not_saved_names = [others[-1][i] for i in ids]
-                                for i, names_k in zip(ids, not_saved_names):
-                                    save_target = features[i].detach().cpu()
-                                    torch.save(save_target, f"{self.args.features_path}/{self.args.upstream}/{names_k}.pt")
+                        if not self.args.pre_extract_dir:
+                            if self.args.features_path and all(i == True for i in file_ids):
+                                # "wavs" is overloaded into saved features here
+                                # can be list of Tensors, or list of list of Tensors
+                                if isinstance(wavs[0], (list, tuple)):
+                                    features= [torch.stack(layer).to(self.args.device) for layer in zip(*wavs)]
+                                else:
+                                    features = torch.stack(wavs).to(self.args.device)
+                            elif all(type(i) == str for i in file_ids):
+                                wavs = [torch.FloatTensor(wav).to(self.args.device) for wav in wavs]
                                 
-                        if specaug:
-                            features, _ = specaug(features)
+                                if self.upstream.trainable:
+                                    features = self.upstream.model(wavs)
+                                else:
+                                    with torch.no_grad():
+                                        features = self.upstream.model(wavs)
+                                features = self.featurizer.model(wavs, features)
+                                if self.args.features_path:
+                                    show(f"[Runner] - Save features of batch no. {batch_id}")
+                                    assert isinstance(file_ids[0], str)
+                                    for i, names_k in enumerate(file_ids):
+                                        save_target = features[i].detach().cpu()
+                                        torch.save(save_target, f"{self.args.features_path}/{self.args.upstream}/{names_k}.pt")                
+                            else:
+                                features = [torch.FloatTensor(wav).to(self.args.device) if wav.dtype==torch.float or wav.dtype==np.ndarray else torch.HalfTensor(wav).to(self.args.device) for wav in wavs]
+                                ids = []
+                                wavs = []
+                                for i in range(len(features)):
+                                    if len(features[i].shape) == 1:
+                                        wavs.append(features[i])
+                                        ids.append(i)
+                                
+                                if self.upstream.trainable:
+                                    part_features = self.upstream.model(wavs)
+                                else:
+                                    with torch.no_grad():
+                                        part_features = self.upstream.model(wavs)                          
+                                part_features = self.featurizer.model(wavs, part_features)
+                                
+                                for i, id in enumerate(ids):
+                                    features[id] = part_features[i]
+                                
+                                if self.args.features_path:
+                                    show(f"[Runner] - Save features of batch no. {batch_id}")
+                                    # assert isinstance(others[-1][0], str)
+                                    # with torch.no_grad():
+                                        # features = self.featurizer.model._select_feature(features)
+                                        # if isinstance(features, (list, tuple)):
+                                        #     features = features[self.args.upstream_layer_selection]
+                                    not_saved_names = [file_ids[i] for i in ids]
+                                    for i, names_k in zip(ids, not_saved_names):
+                                        save_target = features[i].detach().cpu()
+                                        torch.save(save_target, f"{self.args.features_path}/{self.args.upstream}/{names_k}.pt")
+                            if specaug:
+                                features, _ = specaug(features)
+                        else:
+                            features = {"hidden_states": [w.to(self.args.device) for w in wavs]}
+                            features = self.featurizer.model([], features)
+                           
+                        if features[0].dtype == torch.half:
+                            features = [f.float() for f in features]
                         loss = self.downstream.model(
                             train_split,
                             features, *others,
@@ -514,24 +519,59 @@ class Runner():
             if batch_id > evaluate_steps:
                 break
 
-            wavs = [torch.FloatTensor(wav).to(self.args.device) for wav in wavs]
+            file_ids = others[0] if self.args.downstream=="sv_voxceleb1" else others[-1] 
+            # wavs = [torch.FloatTensor(wav).to(self.args.device) for wav in wavs]
             with torch.no_grad():
-                if self.args.features_path and all(i == True for i in others[-1]):
-                    # "wavs" is overloaded into saved features here
-                    # can be list of Tensors, or list of list of Tensors
-                    if isinstance(wavs[0], (list, tuple)):
-                        features= [torch.stack(layer).to(self.args.device) for layer in zip(*wavs)]
+                if not self.args.pre_extract_dir:
+                    if self.args.features_path and all(i == True for i in file_ids):
+                        # "wavs" is overloaded into saved features here
+                        # can be list of Tensors, or list of list of Tensors
+                        if isinstance(wavs[0], (list, tuple)):
+                            features= [torch.stack(layer).to(self.args.device) for layer in zip(*wavs)]
+                        else:
+                            features = torch.stack(wavs).to(self.args.device)
+                    elif all(type(i) == str for i in file_ids):
+                        wavs = [torch.FloatTensor(wav).to(self.args.device) for wav in wavs]
+                        with torch.no_grad():
+                            features = self.upstream.model(wavs)
+                            features = self.featurizer.model(wavs, features)
+                        if self.args.features_path:
+                            show(f"[Runner] - Save features of batch no. {batch_id}")
+                            assert isinstance(file_ids[0], str)
+                            for i, names_k in enumerate(file_ids):
+                                save_target = features[i].detach().cpu()
+                                torch.save(save_target, f"{self.args.features_path}/{self.args.upstream}/{names_k}.pt")        
+                    
                     else:
-                        features = torch.stack(wavs).to(self.args.device)
+                        features = [torch.FloatTensor(wav).to(self.args.device) if wav.dtype==torch.float or wav.dtype==np.ndarray else torch.HalfTensor(wav).to(self.args.device) for wav in wavs]
+                        ids = []
+                        wavs = []
+                        for i in range(len(features)):
+                            if len(features[i].shape) == 1:
+                                wavs.append(features[i])
+                                ids.append(i)
+                        
+                        with torch.no_grad():
+                            part_features = self.upstream.model(wavs)                          
+                            part_features = self.featurizer.model(wavs, part_features)
+                        
+                        for i, id in enumerate(ids):
+                            features[id] = part_features[i]
+                        
+                        if self.args.features_path:
+                            show(f"[Runner] - Save features of batch no. {batch_id}")
+                            not_saved_names = [file_ids[i] for i in ids]
+                            for i, names_k in zip(ids, not_saved_names):
+                                save_target = features[i].detach().cpu()
+                                torch.save(save_target, f"{self.args.features_path}/{self.args.upstream}/{names_k}.pt")
+                
                 else:
-                    features = self.upstream.model(wavs)
-                    features = self.featurizer.model(wavs, features)
-                    if self.args.features_path:
-                        show(f"[Runner] - Save features of dev set batch no. {batch_id}")
-                        assert isinstance(others[-1][0], str)
-                        for i, names_k in enumerate(others[-1]):
-                            save_target = features[i].detach().cpu()
-                            torch.save(save_target, f"{self.args.features_path}/{self.args.upstream}/{names_k}.pt")                
+                    features = {"hidden_states": [w.to(self.args.device) for w in wavs]}
+                    features = self.featurizer.model([], features)
+                           
+                if features[0].dtype == torch.half:
+                    features = [f.float() for f in features]
+                
                 self.downstream.model(
                     split,
                     features, *others,

@@ -42,6 +42,8 @@ class SequenceDataset(Dataset):
         self.libri_root = libri_root
         self.sample_rate = SAMPLE_RATE
         self.split_sets = kwargs[split]
+        self.upstream_name = kwargs['upstream']
+        self.features_path = kwargs['features_path']
 
         # Read table for bucketing
         assert os.path.isdir(bucket_file), 'Please first run `python3 preprocess/generate_len_for_bucket.py -h` to get bucket file.'
@@ -158,6 +160,18 @@ class SequenceDataset(Dataset):
         wav_batch = [self._load_wav(x_file).numpy() for x_file in self.X[index]]
         label_batch = [self.Y[self._parse_x_name(x_file)].numpy() for x_file in self.X[index]]
         filename_batch = [Path(x_file).stem for x_file in self.X[index]]
+        if self.features_path:
+            feature = []
+            fname_or_true = []
+            for idx, fname in enumerate(filename_batch):
+                feature_path = os.path.join(self.features_path, self.upstream_name, f"{fname}.pt")
+                if os.path.exists(feature_path):
+                    feature.append(torch.load(feature_path))
+                    fname_or_true.append(True)
+                else:
+                    feature.append(wav_batch[idx])
+                    fname_or_true.append(filename_batch[idx])
+                return feature, label_batch, fname_or_true
         return wav_batch, label_batch, filename_batch # bucketing, return ((wavs, labels))
 
     def collate_fn(self, items):

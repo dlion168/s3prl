@@ -190,7 +190,7 @@ class Runner():
         model = Downstream(
             upstream_dim = self.featurizer.model.output_dim,
             upstream_rate = self.featurizer.model.downsample_rate,
-            **self.config,
+            **dict(self.config, sample_rate=self.upstream.model.sample_rate),
             **vars(self.args)
         ).to(self.args.device)
 
@@ -302,7 +302,8 @@ class Runner():
                             with torch.no_grad():
                                 features = self.upstream.model(wavs)
                         features = self.featurizer.model(wavs, features)
-
+                        if features[0].dtype == torch.half:
+                            features = [f.float() for f in features]
                         if specaug:
                             features, _ = specaug(features)
 
@@ -472,6 +473,8 @@ class Runner():
             with torch.no_grad():
                 features = self.upstream.model(wavs)
                 features = self.featurizer.model(wavs, features)
+                if features[0].dtype == torch.half:
+                    features = [f.float() for f in features]
                 self.downstream.model(
                     split,
                     features, *others,

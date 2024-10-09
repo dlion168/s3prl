@@ -13,7 +13,7 @@ class SnipsDataset(Dataset):
         self.speaker_list = kwargs[f'{split}_speakers'] if type(split) == str else kwargs[f'{split[0]}_speakers']
 
         # Load transcription
-        transcripts_file = open(join(self.path, 'all.iob.snips.txt' if '-slot' in tokenizer.token_type else 'all-trans.txt')).readlines()
+        transcripts_file = open(join(self.path, 'all.iob.snips.txt' if '-slot' in tokenizer.token_type else 'all-trans.txt'), encoding='utf-8').readlines()
         transcripts = {}
         for line in transcripts_file:
             line = line.strip().split(' ')

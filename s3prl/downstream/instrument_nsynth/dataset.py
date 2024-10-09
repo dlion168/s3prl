@@ -11,9 +11,10 @@ from torch.utils import data
 import pandas as pd
 import torch.nn.functional as F
 import json
+import torch
 
 class InstrumentDataset(data.Dataset):
-    def __init__(self, metadata_dir, split, sample_duration=None, return_audio_path=True):
+    def __init__(self, metadata_dir, split, sample_duration=None, return_audio_path=True, **kwargs):
         # self.cfg = cfg
         self.metadata_dir = os.path.join(metadata_dir, f'nsynth-{split}/examples.json')
         self.metadata = json.load(open(self.metadata_dir,'r'))
@@ -37,6 +38,8 @@ class InstrumentDataset(data.Dataset):
         self.return_audio_path = return_audio_path
         self.sample_rate = 16000
         self.sample_duration = sample_duration * self.sample_rate if sample_duration else None
+        self.upstream_name = kwargs['upstream']
+        self.features_path = kwargs['features_path']
     
     def label2class(self, id_list):
         return [self.id2class[id] for id in id_list]
@@ -59,8 +62,16 @@ class InstrumentDataset(data.Dataset):
 
         # label = self.class2id[audio_path.split('/')[1].split('_')[0]]
         label = self.class2id[audio_path.rsplit('_', 2)[0]]
+        if self.features_path:
+            feature_path = os.path.join(self.features_path, self.upstream_name, f"{audio_path.replace('/','-')}.pt")
+            if os.path.exists(feature_path):
+                try:
+                    feature = torch.load(feature_path)
+                    return feature, label, True
+                except:
+                    pass
         if self.return_audio_path:
-            return audio.numpy(), label, audio_path
+            return audio.numpy(), label, audio_path.replace('/','-')
         return audio.numpy(), label
 
     def __len__(self):
@@ -69,3 +80,69 @@ class InstrumentDataset(data.Dataset):
     def collate_fn(self, samples):
         return zip(*samples)
 
+class InstrumentFeatureDataset(data.Dataset):
+    def __init__(self, metadata_dir, feature_dir, split, return_audio_path=True, **kwargs):
+        # self.cfg = cfg
+        self.metadata_dir = os.path.join(metadata_dir, f'nsynth-{split}/examples.json')
+        self.metadata = json.load(open(self.metadata_dir,'r'))
+        self.metadata = [(k + '.pt', v['instrument_family_str']) for k, v in self.metadata.items()]
+        self.feature_dir = feature_dir
+        
+        self.audio_dir = os.path.join(metadata_dir, f'nsynth-{split}')
+        self.class2id = {
+            'bass': 0,
+            'brass': 1,
+            'flute': 2,
+            'guitar': 3,
+            'keyboard': 4,
+            'mallet': 5,
+            'organ': 6,
+            'reed': 7,
+            'string': 8,
+            'synth_lead': 9,
+            'vocal': 10
+        }
+        self.id2class = {v: k for k, v in self.class2id.items()}
+        self.return_audio_path = return_audio_path
+        self.upstream_name = kwargs['upstream']
+        self.features_path = kwargs['features_path']
+    
+    def label2class(self, id_list):
+        return [self.id2class[id] for id in id_list]
+    
+    def __getitem__(self, index):
+        audio_path = self.metadata[index][0]
+        
+        feature = torch.load(os.path.join(self.feature_dir, audio_path), map_location="cpu")
+        if len(feature[0].shape) == 1:
+            feature = [f.unsqueeze(0).unsqueeze(0) for f in feature]
+        elif len(feature.shape) == 2:
+            feature = [f.unsqueeze(0) for f in feature]
+            
+        label = self.class2id[audio_path.rsplit('_', 2)[0]]
+
+        if self.return_audio_path:
+            return feature, label, audio_path.replace('/','-')
+        return feature, label
+
+    def __len__(self):
+        return len(self.metadata)
+    
+    def collate_fn(self, samples):
+        zipped = list(zip(*samples))
+        
+        batch_size = len(zipped[0])
+        num_layers = len(zipped[0][0])
+        
+        # Initialize a list to hold the final output for each layer
+        output_list = []
+        for layer_idx in range(num_layers):
+            # Collect all batch elements for the current layer
+            layer_tensors = [zipped[0][batch_idx][layer_idx].squeeze(0) for batch_idx in range(batch_size)]
+            # Stack tensors from all batches along the 0th dimension to form [batch, 1, hidden]
+            stacked_tensor = torch.stack(layer_tensors, dim=0)
+            output_list.append(stacked_tensor)
+        
+        zipped[0] = output_list
+        
+        return zipped

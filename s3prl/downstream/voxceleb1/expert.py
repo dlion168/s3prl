@@ -44,10 +44,30 @@ class DownstreamExpert(nn.Module):
 
         root_dir = Path(self.datarc['file_path'])
 
-        self.train_dataset = SpeakerClassifiDataset('train', root_dir, self.datarc['meta_data'], self.datarc['max_timestep'])
-        self.dev_dataset = SpeakerClassifiDataset('dev', root_dir, self.datarc['meta_data'])
-        self.test_dataset = SpeakerClassifiDataset('test', root_dir, self.datarc['meta_data'])
-        
+        self.train_dataset = SpeakerClassifiDataset(
+            'train', 
+            root_dir,
+            self.datarc['meta_data'], 
+            self.datarc['max_timestep'],
+            upstream=kwargs['upstream'],
+            features_path=kwargs['features_path'],
+        )
+        self.dev_dataset = SpeakerClassifiDataset(
+            'dev',
+            root_dir,
+            self.datarc['meta_data'], 
+            self.datarc['max_timestep'],
+            upstream=kwargs['upstream'],
+            features_path=kwargs['features_path'],
+        )
+        self.test_dataset = SpeakerClassifiDataset(
+            'test',
+            root_dir,
+            self.datarc['meta_data'], 
+            self.datarc['max_timestep'],
+            upstream=kwargs['upstream'],
+            features_path=kwargs['features_path'],
+        )
         model_cls = eval(self.modelrc['select'])
         model_conf = self.modelrc.get(self.modelrc['select'], {})
         self.projector = nn.Linear(upstream_dim, self.modelrc['projector_dim'])

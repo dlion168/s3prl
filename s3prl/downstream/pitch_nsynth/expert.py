@@ -42,9 +42,24 @@ class DownstreamExpert(nn.Module):
         self.modelrc = downstream_expert['modelrc']
         self.expdir = expdir
 
-        self.train_dataset = PitchClassiDataset(self.datarc['meta_data'], 'train')
-        self.dev_dataset = PitchClassiDataset(self.datarc['meta_data'], 'dev')
-        self.test_dataset = PitchClassiDataset(self.datarc['meta_data'], 'test')
+        self.train_dataset = PitchClassiDataset(
+            self.datarc['meta_data'], 
+            'train',
+            upstream=kwargs['upstream'],
+            features_path=kwargs['features_path'],
+        )
+        self.dev_dataset = PitchClassiDataset(
+            self.datarc['meta_data'], 
+            'dev',
+            upstream=kwargs['upstream'],
+            features_path=kwargs['features_path'],
+        )
+        self.test_dataset = PitchClassiDataset(
+            self.datarc['meta_data'], 
+            'test',
+            upstream=kwargs['upstream'],
+            features_path=kwargs['features_path'],
+        )
         
         model_cls = eval(self.modelrc['select'])
         model_conf = self.modelrc.get(self.modelrc['select'], {})

@@ -23,7 +23,7 @@ from torch.distributed import is_initialized
 from torch.nn.utils.rnn import pad_sequence
 #-------------#
 from ..model import *
-from .dataset import InstrumentDataset
+from .dataset import InstrumentDataset, InstrumentFeatureDataset
 from argparse import Namespace
 from pathlib import Path
 
@@ -41,10 +41,44 @@ class DownstreamExpert(nn.Module):
         self.datarc = downstream_expert['datarc']
         self.modelrc = downstream_expert['modelrc']
         self.expdir = expdir
+        self.pre_extract_dir = kwargs["pre_extract_dir"]
 
-        self.train_dataset = InstrumentDataset(self.datarc['meta_data'], 'train')
-        self.dev_dataset = InstrumentDataset(self.datarc['meta_data'], 'dev')
-        self.test_dataset = InstrumentDataset(self.datarc['meta_data'], 'test')
+        self.train_dataset = InstrumentFeatureDataset(
+            self.datarc['meta_data'], 
+            self.pre_extract_dir,
+            'train',
+            upstream=kwargs['upstream'],
+            features_path=kwargs['features_path'],
+        )if self.pre_extract_dir else InstrumentDataset(
+            self.datarc['meta_data'], 
+            'train',
+            upstream=kwargs['upstream'],
+            features_path=kwargs['features_path'],
+        )
+        self.dev_dataset = InstrumentFeatureDataset(
+            self.datarc['meta_data'], 
+            self.pre_extract_dir,
+            'dev',
+            upstream=kwargs['upstream'],
+            features_path=kwargs['features_path'],
+        )if self.pre_extract_dir else InstrumentDataset(
+            self.datarc['meta_data'], 
+            'dev',
+            upstream=kwargs['upstream'],
+            features_path=kwargs['features_path'],
+        )
+        self.test_dataset = InstrumentFeatureDataset(
+            self.datarc['meta_data'],
+            self.pre_extract_dir, 
+            'test',
+            upstream=kwargs['upstream'],
+            features_path=kwargs['features_path'],
+        ) if self.pre_extract_dir else InstrumentDataset(
+            self.datarc['meta_data'], 
+            'test',
+            upstream=kwargs['upstream'],
+            features_path=kwargs['features_path'],
+        )
         
         model_cls = eval(self.modelrc['select'])
         model_conf = self.modelrc.get(self.modelrc['select'], {})

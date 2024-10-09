@@ -4,7 +4,7 @@ import torchaudio
 
 CACHE_PATH = os.path.join(os.path.dirname(__file__), '.cache/')
 
-import os
+import torch
 
 import numpy as np
 from torch.utils import data
@@ -13,7 +13,7 @@ import torch.nn.functional as F
 import json
 
 class PitchClassiDataset(data.Dataset):
-    def __init__(self, metadata_dir, split, sample_duration=None, return_audio_path=True):
+    def __init__(self, metadata_dir, split, sample_duration=None, return_audio_path=True, **kwargs):
         # self.cfg = cfg
         self.metadata_dir = os.path.join(metadata_dir, f'nsynth-{split}/examples.json')
         self.metadata = json.load(open(self.metadata_dir,'r'))
@@ -23,6 +23,8 @@ class PitchClassiDataset(data.Dataset):
         self.return_audio_path = return_audio_path
         self.sample_rate = 16000
         self.sample_duration = sample_duration * self.sample_rate if sample_duration else None
+        self.upstream_name = kwargs['upstream']
+        self.features_path = kwargs['features_path']
     
     def label2class(self, id_list):
         return [ id+9 for id in id_list]
@@ -43,9 +45,13 @@ class PitchClassiDataset(data.Dataset):
             else:
                 random_start = np.random.randint(0, audio.shape[1] - self.sample_duration)
                 audio = audio[random_start:random_start+self.sample_duration]
-        
+        if self.features_path:
+            feature_path = os.path.join(self.features_path, self.upstream_name, f"{audio_path.replace('/','-')}.pt")
+            if os.path.exists(feature_path):
+                feature = torch.load(feature_path)
+                return feature, label, True
         if self.return_audio_path:
-            return audio.numpy(), label, audio_path
+            return audio.numpy(), label, audio_path.replace("/","-")
         return audio.numpy(), label
 
     def __len__(self):
