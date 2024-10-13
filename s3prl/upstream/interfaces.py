@@ -50,6 +50,7 @@ class UpstreamBase(nn.Module, metaclass=initHook):
         super().__init__()
         self.hooks: List[Hook] = [Hook(*hook) for hook in hooks] if hooks else []
         self.hook_postprocess = hook_postprocess
+        self.sample_rate = 16000
         self._hook_hiddens: List[Tuple(str, Tensor)] = []
 
     def remove_all_hooks(self):
@@ -147,7 +148,7 @@ class Featurizer(nn.Module):
         self.name = "Featurizer"
 
         upstream.eval()
-        paired_wavs = [torch.randn(SAMPLE_RATE).to(upstream_device)]
+        paired_wavs = [torch.randn(upstream.sample_rate).to(upstream_device)]
         with torch.no_grad():
             paired_features = upstream(paired_wavs)
 

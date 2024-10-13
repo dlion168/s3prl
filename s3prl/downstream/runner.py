@@ -190,7 +190,7 @@ class Runner():
         model = Downstream(
             upstream_dim = self.featurizer.model.output_dim,
             upstream_rate = self.featurizer.model.downsample_rate,
-            **self.config,
+            **dict(self.config, sample_rate=self.upstream.model.sample_rate),
             **vars(self.args)
         ).to(self.args.device)
 
