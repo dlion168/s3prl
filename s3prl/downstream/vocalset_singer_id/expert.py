@@ -23,7 +23,7 @@ from torch.distributed import is_initialized
 from torch.nn.utils.rnn import pad_sequence
 #-------------#
 from ..model import *
-from .dataset import SingerDataset
+from .dataset import SingerDataset, SingerFeatureDataset
 from argparse import Namespace
 from pathlib import Path
 
@@ -41,29 +41,51 @@ class DownstreamExpert(nn.Module):
         self.datarc = downstream_expert['datarc']
         self.modelrc = downstream_expert['modelrc']
         self.expdir = expdir
+        self.pre_extract_dir = kwargs["pre_extract_dir"]
 
         root_dir = Path(self.datarc['file_path'])
 
-        self.train_dataset = SingerDataset(
+        self.train_dataset = SingerFeatureDataset(
+            self.pre_extract_dir,
+            self.datarc['meta_data'], 
+            'train',
+            upstream=kwargs['upstream'],
+            features_path=kwargs['features_path'],
+        )if self.pre_extract_dir else SingerDataset(
             root_dir, 
             self.datarc['meta_data'], 
             'train',
             upstream=kwargs['upstream'],
             features_path=kwargs['features_path'],
+            sample_rate = kwargs["sample_rate"]
         )
-        self.dev_dataset = SingerDataset(
-            root_dir, 
+        self.dev_dataset = SingerFeatureDataset(
+            self.pre_extract_dir,
             self.datarc['meta_data'], 
             'dev',
             upstream=kwargs['upstream'],
             features_path=kwargs['features_path']
-        )
-        self.test_dataset = SingerDataset(
+        )if self.pre_extract_dir else SingerDataset(
             root_dir, 
+            self.datarc['meta_data'], 
+            'dev',
+            upstream=kwargs['upstream'],
+            features_path=kwargs['features_path'],
+            sample_rate = kwargs["sample_rate"]
+        )
+        self.test_dataset = SingerFeatureDataset(
+            self.pre_extract_dir,
             self.datarc['meta_data'], 
             'test',
             upstream=kwargs['upstream'],
             features_path=kwargs['features_path']
+        )if self.pre_extract_dir else SingerDataset(
+            root_dir, 
+            self.datarc['meta_data'], 
+            'test',
+            upstream=kwargs['upstream'],
+            features_path=kwargs['features_path'],
+            sample_rate = kwargs["sample_rate"]
         )
         
         model_cls = eval(self.modelrc['select'])
@@ -116,7 +138,7 @@ class DownstreamExpert(nn.Module):
 
         labels = torch.LongTensor(labels).to(features.device)
         loss = self.objective(predicted, labels)
-
+        
         predicted_classid = predicted.max(dim=-1).indices
         records['acc'] += (predicted_classid == labels).view(-1).cpu().float().tolist()
         records['loss'].append(loss.item())
