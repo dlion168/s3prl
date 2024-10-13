@@ -31,3 +31,10 @@ pydantic
 sed_eval
 more_itertools
 tensorboard
+pytorchvideo
+iopath
+ftfy
+fairseq
+addict
+modelscope
+mido
