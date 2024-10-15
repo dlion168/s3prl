@@ -60,7 +60,6 @@ class TemporalAligner(nn.Module):
             Aligned distilHuBERT features cropped and temporally downsampled.
         """
         # Step 1: Perform temporal downsampling of SSAST features
-        print(f"shapes of ssast before pooling: {ssast_features.shape}")
 
         ssast_features_pooled = self.temporal_pooling(ssast_features.transpose(1, 2)).transpose(1, 2)
         
@@ -79,9 +78,6 @@ class TemporalAligner(nn.Module):
         if max_frames_distilhubert < max_frames_ssast:
             ssast_features_pooled = ssast_features_pooled[:, :max_frames_distilhubert, :]
         
-        print(f"shapes of ssast and distilhubert features:")
-        print(f"shapes of ssast: {max_frames_ssast}")
-        print(f"shapes of distilhubert: {max_frames_distilhubert}")
         
         return ssast_features_pooled, distilhubert_features_cropped
 
@@ -164,6 +160,26 @@ def get_ATST_teacher_model(arch, ncrops, atst_model_path, target_device):
     # Freeze the parameters of the teacher and student models
 
     return teacher_3
+
+def convert_mert_state_dict(state_dict):
+    new_state_dict_mert = {}
+    for key, value in state_dict.items():
+        # Convert "conv_layers.0.conv.weight" to "conv_layers.0.0.weight"
+        # Convert "conv_layers.0.layer_norm.weight" to "conv_layers.0.2.weight" (assuming layer_norm is at index 2)
+        if "conv_layers" in key:
+            # Handle the convolution layers
+            if "conv.weight" in key:
+                new_key = key.replace("conv.weight", "0.weight")
+            # Handle the normalization layers
+            elif "layer_norm" in key:
+                new_key = key.replace("layer_norm.weight", "2.weight").replace("layer_norm.bias", "2.bias")
+            # Handle activation layers if needed (you can add this if distilHuBERT expects it)
+            else:
+                new_key = key
+            new_state_dict_mert[new_key] = value
+        else:
+            new_state_dict_mert[key] = value
+    return new_state_dict_mert
 
 def rename_attention_keys_ast(state_dict):
     new_state_dict = {}
@@ -270,6 +286,27 @@ class UpstreamPretrainExpert(nn.Module):
             drop_last=False,
             pin_memory=True,
             collate_fn=dataset.collate_fn,
+        )
+    
+    def _get_dev_dataloader(self):
+        dataset = OnlineWaveDataset(
+            self.upstream_config["task"],
+            self.datarc["dev_batch_size"],
+            target_level=self.upstream_config["audio"]["target_level"],
+            data_type='dev',
+            sets=self.datarc["devsets"],
+            **self.datarc,
+        )
+        #sampler = DistributedSampler(dataset) if is_initialized() else None
+
+        self.devloader = DataLoader(
+            dataset,
+            batch_size=1,  # for bucketing
+            shuffle=False,
+            num_workers=self.datarc["num_workers"],
+            drop_last=False,
+            pin_memory=True,
+            collate_fn=dataset.collate_fn
         )
 
     # Interface
@@ -532,27 +569,154 @@ class MultiDistillerForPretrain(nn.Module):
         elif model_to_initialize == 'mert_v0_public':
             print(f"Initializing student model from {model_to_initialize}...")
             self.load_teacher_weights('mert_v0_public')
+        elif model_to_initialize == 'all':
+            self.load_teacher_weights('all')
+
 
 
     def load_teacher_weights(self, teacher_name, device="cuda"):
         """
         Load the weights from a specified teacher model (hubert_base or mert_v0_public).
         """
-        teacher_model = self.teacher_models.get(teacher_name)
-        if teacher_model is None:
-            print(f"teacher_name is {teacher_name} and self.config.initialize_from is {self.config.initialize_from[0]} ")
-            if teacher_name == self.config.initialize_from[0]:
-                if teacher_name == "mert_v0_public":
-                    temp_config = AutoConfig.from_pretrained("m-a-p/MERT-v0-public", trust_remote_code=True)
-                    temp_config.output_hidden_states = True  # Enable hidden states in the output
-                    teacher_model = AutoModel.from_pretrained("m-a-p/MERT-v0-public", config=temp_config, trust_remote_code=True).to(device)
-                    disable_MERT_encoder_dropout(teacher_model)
-                if teacher_name == "hubert_base":
-                    teacher_model = torch.hub.load("s3prl/s3prl","hubert_base").to(device)
-                    teacher_model.model.encoder.layerdrop = 0
-                    print("[HuBERT] - Disabled teacher's encoder layerdrop")
-            else:
-                raise ValueError(f"[Error] Teacher model '{teacher_name}' not found in the loaded teacher models.")
+        print(f"teacher_name {teacher_name}")
+        if teacher_name == "all":
+            teacher_model_1 = self.teacher_models.get("mert_v0_public")
+            teacher_model_2 = self.teacher_models.get("hubert_base")
+            teacher_model_3 = self.teacher_models.get("ssast-frame")
+
+            if teacher_model_1 is None:
+                temp_config = AutoConfig.from_pretrained("m-a-p/MERT-v0-public", trust_remote_code=True)
+                temp_config.output_hidden_states = True  # Enable hidden states in the output
+                teacher_model_1 = AutoModel.from_pretrained("m-a-p/MERT-v0-public", config=temp_config, trust_remote_code=True).to(device)
+                disable_MERT_encoder_dropout(teacher_model_1)
+            if teacher_model_2 is None:
+                teacher_model_2 = torch.hub.load("s3prl/s3prl","hubert_base").to(device)
+                teacher_model_2.model.encoder.layerdrop = 0
+                print("[HuBERT] - Disabled teacher's encoder layerdrop")
+            if teacher_model_3 is None:
+                ast_config = ASTConfig(
+                    frequency_stride=128,
+                    fshape=128, 
+                    tshape=2,
+                    time_stride=2,
+                    patch_size=16,
+                    hidden_size=768,
+                    max_length=1024,
+                    num_attention_heads=12,
+                    num_hidden_layers=12,
+                    num_mel_bins=128,
+                    qkv_bias=True,
+                    output_hidden_states = True
+                    )
+                teacher_model_3 = ASTModel(config=ast_config)
+                teacher_3_processor = AutoProcessor.from_pretrained("MIT/ast-finetuned-audioset-10-10-0.4593")
+                ssast_state_dict = torch.load("./ssast_checkpoints/SSAST-Base-Frame-400.pth")
+                self.temporal_alignment = TemporalAligner()
+                teacher_3_processor.do_normalize = True # I need to modify this later as well.
+                teacher_3_processor.mean = self.config.fbank_mean
+                teacher_3_processor.std = self.config.fbank_std
+                print(f"teacher_3_processor is {teacher_3_processor}")
+                converted = convert_ssast_state_dict_to_astmodel(ssast_state_dict)
+                #converted['embeddings.position_embeddings'] = converted['embeddings.position_embeddings'][:, :507, :]
+                #pdb.set_trace()
+                teacher_model_3.load_state_dict(converted, strict=True)
+                teacher_model_3 = teacher_model_3.to("cuda")
+                disable_AST_encoder_dropout(teacher_model_3)
+
+            # Get the state_dict of each model
+            mert_state_dict = teacher_model_1.feature_extractor.state_dict()
+            mert_state_dict = convert_mert_state_dict(mert_state_dict)
+
+            hubert_state_dict = teacher_model_2.model.feature_extractor.state_dict()
+
+
+            # Average all weights for the 'all' case
+            averaged_conv_layers = average_weights([hubert_state_dict, mert_state_dict])
+
+            # Load the averaged state_dict into the student model
+            # Handle the conv layers specifically with just MERT and Hubert
+            if self.config.init_teacher_conv_layers:
+                print(f"[DistillerForPretrain] - Averaging conv layers from Hubert and MERT")
+                self.distiller.feature_extractor.load_state_dict(averaged_conv_layers)
+                
+                if self.distiller.post_extract_proj is not None:
+                    self.distiller.post_extract_proj.load_state_dict(
+                        average_weights([teacher_model_2.model.post_extract_proj.state_dict(), teacher_model_1.feature_projection.projection.state_dict()])
+                    )
+            
+            # Load weights for encoder layers
+            if self.config.init_teacher_encoder_layers:
+                # MERT has `conv`, `padding`, `activation`, distilHuBERT has indices `0`, `1`, `2` in a Sequential
+                mert_pos_conv = teacher_model_1.encoder.pos_conv_embed.state_dict()
+
+                # Create a new state_dict for distilHuBERT by mapping the keys
+                # Create a new state_dict to map MERT's keys to distilHuBERT's keys
+                pos_conv_dict = {
+                    '0.bias': mert_pos_conv['conv.bias'],            # Mapping MERT's conv.bias to 0.bias
+                    '0.weight_g': mert_pos_conv['conv.weight_g'],    # Mapping MERT's weight_g to 0.weight_g
+                    '0.weight_v': mert_pos_conv['conv.weight_v']     # Mapping MERT's weight_v to 0.weight_v
+                }
+        
+
+                print(f"[DistillerForPretrain] - Loading encoder positional convolution from MERT")
+                # hubert style: teacher_model_2.model.encoder.pos_conv.state_dict()
+                average_pos_conv = average_weights([teacher_model_2.model.encoder.pos_conv.state_dict(),pos_conv_dict])
+                self.distiller.encoder.pos_conv.load_state_dict(average_pos_conv)
+
+                #### mising to load the transformer part with the weights of the 3 transormer teacher models.
+                ##### here I need to mix the three of them!.
+                print(f"[DistillerForPretrain] - Loading encoder layers from MERT")
+                for l in range(self.config.encoder_layers):
+                    # Mapping MERT's HubertEncoderLayer to distilHuBERT's TransformerSentenceEncoderLayer
+                    mert_encoder_layer = teacher_model_1.encoder.layers[l].state_dict()
+                    # Create a new state dict with mapped keys for distilHuBERT
+                    new_encoder_layer_dict = {}
+                    for key, value in mert_encoder_layer.items():
+                        # Rename attention block
+                        if 'attention.' in key:
+                            new_key = key.replace('attention.', 'self_attn.')
+                        # Rename layer_norm to self_attn_layer_norm
+                        elif 'layer_norm' in key and 'final_layer_norm' not in key:
+                            new_key = key.replace('layer_norm', 'self_attn_layer_norm')
+                        elif 'final_layer_norm' in key:
+                            new_key = key  # No changes for final_layer_norm
+                        # Rename feed forward layers
+                        elif 'feed_forward.intermediate_dense' in key:
+                            new_key = key.replace('feed_forward.intermediate_dense', 'fc1')
+                        elif 'feed_forward.output_dense' in key:
+                            new_key = key.replace('feed_forward.output_dense', 'fc2')
+                        else:
+                            new_key = key  # If no changes are needed, keep the key the same
+                        # Add the mapped key and value to the new dict
+                        new_encoder_layer_dict[new_key] = value
+                    
+                        #### hubert one : teacher_model.model.encoder.layers[l].state_dict()
+                        ### ssast one:  converted_state_dict_ast = rename_attention_keys_ast(teacher_model_3.encoder.layer[l].state_dict())
+                    
+                    converted_state_dict_ast = rename_attention_keys_ast(teacher_model_3.encoder.layer[l].state_dict())
+                    hubert_encoder_layer = teacher_model_2.model.encoder.layers[l].state_dict()
+
+                    averaged_encoder = average_weights([new_encoder_layer_dict, converted_state_dict_ast,hubert_encoder_layer])
+                    self.distiller.encoder.layers[l].load_state_dict(averaged_encoder)
+
+        else:
+            teacher_model = self.teacher_models.get(teacher_name)
+            if teacher_model is None:
+                print(f"teacher_name is {teacher_name} and self.config.initialize_from is {self.config.initialize_from[0]} ")
+                if teacher_name == self.config.initialize_from[0]:
+                    if teacher_name == "mert_v0_public":
+                        temp_config = AutoConfig.from_pretrained("m-a-p/MERT-v0-public", trust_remote_code=True)
+                        temp_config.output_hidden_states = True  # Enable hidden states in the output
+                        teacher_model = AutoModel.from_pretrained("m-a-p/MERT-v0-public", config=temp_config, trust_remote_code=True).to(device)
+                        disable_MERT_encoder_dropout(teacher_model)
+                    if teacher_name == "hubert_base":
+                        teacher_model = torch.hub.load("s3prl/s3prl","hubert_base").to(device)
+                        teacher_model.model.encoder.layerdrop = 0
+                        print("[HuBERT] - Disabled teacher's encoder layerdrop")
+                
+
+                else:
+                    raise ValueError(f"[Error] Teacher model '{teacher_name}' not found in the loaded teacher models.")
 
         # Example: loading weights from hubert_base or mert_v0_public for feature extractor
         if teacher_name == 'hubert_base':
@@ -587,46 +751,22 @@ class MultiDistillerForPretrain(nn.Module):
             state_dict = teacher_model.feature_extractor.state_dict()
 
             # Modify the keys to match distilHuBERT's expected layer names
-            new_state_dict = {}
-            for key, value in state_dict.items():
-                # Convert "conv_layers.0.conv.weight" to "conv_layers.0.0.weight"
-                # Convert "conv_layers.0.layer_norm.weight" to "conv_layers.0.2.weight" (assuming layer_norm is at index 2)
-                if "conv_layers" in key:
-                    # Handle the convolution layers
-                    if "conv.weight" in key:
-                        new_key = key.replace("conv.weight", "0.weight")
-                    # Handle the normalization layers
-                    elif "layer_norm" in key:
-                        new_key = key.replace("layer_norm.weight", "2.weight").replace("layer_norm.bias", "2.bias")
-                    # Handle activation layers if needed (you can add this if distilHuBERT expects it)
-                    else:
-                        new_key = key
-                    new_state_dict[new_key] = value
-                else:
-                    new_state_dict[key] = value
+            new_state_dict_mert = convert_mert_state_dict(state_dict)
 
+            if not teacher_name == "all":
+                if self.config.init_teacher_conv_layers:
+                    print(f"[DistillerForPretrain] - Initializing feature extractor from {teacher_name}")
+                    self.distiller.feature_extractor.load_state_dict(new_state_dict_mert)
 
-            if self.config.init_teacher_conv_layers:
-                print(f"[DistillerForPretrain] - Initializing feature extractor from {teacher_name}")
-                self.distiller.feature_extractor.load_state_dict(new_state_dict)
-
-                self.distiller.post_extract_proj.load_state_dict(
-                teacher_model.feature_projection.projection.state_dict()
-                )
+                    self.distiller.post_extract_proj.load_state_dict(
+                    teacher_model.feature_projection.projection.state_dict()
+                    )
             
 
             # Load weights for encoder layers
             if self.config.init_teacher_encoder_layers:
                 # MERT has `conv`, `padding`, `activation`, distilHuBERT has indices `0`, `1`, `2` in a Sequential
                 mert_pos_conv = teacher_model.encoder.pos_conv_embed.state_dict()
-
-                # Decompose the weight_g and weight_v to get the actual weights
-                #conv_weight_g = mert_pos_conv['conv.weight_g']
-                #conv_weight_v = mert_pos_conv['conv.weight_v']
-                
-                #conv_weight = (conv_weight_g / conv_weight_v.norm(dim=1, keepdim=True)) * conv_weight_v # ->
-                # -> check: https://pytorch.org/docs/2.3/generated/torch.nn.utils.weight_norm.html
-
 
                 # Create a new state_dict for distilHuBERT by mapping the keys
                 # Create a new state_dict to map MERT's keys to distilHuBERT's keys
@@ -668,6 +808,7 @@ class MultiDistillerForPretrain(nn.Module):
 
 
                     self.distiller.encoder.layers[l].load_state_dict(new_encoder_layer_dict)
+
 
 
     def forward(
