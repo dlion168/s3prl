@@ -15,8 +15,13 @@ from transformers import AutoModel, AutoConfig
 import torchaudio
 import torchaudio.transforms as transforms
 from transformers import ASTForAudioClassification
-from transformers import AutoProcessor, ASTModel
+from transformers import AutoProcessor, ASTModel, ASTConfig
+from pretrain.multi_distiller.convert_ssast_dict import convert_ssast_state_dict_to_astmodel
+from pretrain.multi_distiller.disable_dropout import disable_MERT_encoder_dropout, disable_AST_encoder_dropout, disable_SSAST_encoder_dropout
+
 import pdb
+import collections
+
 
 
 
@@ -55,10 +60,13 @@ class TemporalAligner(nn.Module):
             Aligned distilHuBERT features cropped and temporally downsampled.
         """
         # Step 1: Perform temporal downsampling of SSAST features
+        print(f"shapes of ssast before pooling: {ssast_features.shape}")
+
         ssast_features_pooled = self.temporal_pooling(ssast_features.transpose(1, 2)).transpose(1, 2)
         
         # Step 2: Crop distilHuBERT features if they exceed the SSAST max length
         # Determine the maximum number of frames SSAST can process (10 seconds)
+        # This may not be needed anymore as I am usnig the interpolation method. Will this be good or bad for pre-training?
         max_frames_ssast = ssast_features_pooled.shape[1]
         max_frames_distilhubert = distilhubert_features.shape[1]
         
@@ -70,7 +78,10 @@ class TemporalAligner(nn.Module):
         
         if max_frames_distilhubert < max_frames_ssast:
             ssast_features_pooled = ssast_features_pooled[:, :max_frames_distilhubert, :]
-    
+        
+        print(f"shapes of ssast and distilhubert features:")
+        print(f"shapes of ssast: {max_frames_ssast}")
+        print(f"shapes of distilhubert: {max_frames_distilhubert}")
         
         return ssast_features_pooled, distilhubert_features_cropped
 
@@ -154,87 +165,45 @@ def get_ATST_teacher_model(arch, ncrops, atst_model_path, target_device):
 
     return teacher_3
 
-def disable_MERT_encoder_dropout(model):
-    """Disable all dropouts in the encoder layers of the model by setting their probabilities to 0.0."""
+def rename_attention_keys_ast(state_dict):
+    new_state_dict = {}
+    for key in state_dict.keys():
+        new_key = key
 
-    # Disable encoder layer dropout if available in config
-    if hasattr(model.config, 'encoder_layerdrop'):
-        model.config.encoder_layerdrop = 0.0  # Set encoder layer dropout to 0
-        print("[MERT] - Disabled all dropouts in the encoder's blocks via config")
+        # Map "ASTSelfAttention" keys to unified format (similar to "self_attn" in other models)
+        new_key = new_key.replace("attention.attention.query", "self_attn.q_proj")
+        new_key = new_key.replace("attention.attention.key", "self_attn.k_proj")
+        new_key = new_key.replace("attention.attention.value", "self_attn.v_proj")
+        new_key = new_key.replace("attention.output.dense", "self_attn.out_proj")
 
-    # Iterate through all encoder layers and disable their dropouts by setting p=0.0
-    for layer in model.encoder.layers:
-        # Disable attention dropout
-        if hasattr(layer, 'attention') and hasattr(layer.attention, 'dropout'):
-            if isinstance(layer.attention.dropout, nn.Dropout):
-                layer.attention.dropout.p = 0.0  # Correctly set the probability to 0
-            elif isinstance(layer.attention.dropout, float):
-                layer.attention.dropout = 0.0  # Directly set the float value
+        # Map "ASTSelfOutput" layer norm to self-attention layer norm
+        new_key = new_key.replace("attention.output", "self_attn_layer_norm")
 
-        # Disable intermediate and output dropouts in the feed-forward layer
-        if hasattr(layer, 'feed_forward'):
-            if hasattr(layer.feed_forward, 'intermediate_dropout'):
-                if isinstance(layer.feed_forward.intermediate_dropout, nn.Dropout):
-                    layer.feed_forward.intermediate_dropout.p = 0.0
-                elif isinstance(layer.feed_forward.intermediate_dropout, float):
-                    layer.feed_forward.intermediate_dropout = 0.0  # Directly set the float value
+        # Map "ASTIntermediate" to fc1 and "ASTOutput" to fc2 (for feed-forward network)
+        new_key = new_key.replace("intermediate.dense", "fc1")
+        new_key = new_key.replace("output.dense", "fc2")
 
-            if hasattr(layer.feed_forward, 'output_dropout'):
-                if isinstance(layer.feed_forward.output_dropout, nn.Dropout):
-                    layer.feed_forward.output_dropout.p = 0.0
-                elif isinstance(layer.feed_forward.output_dropout, float):
-                    layer.feed_forward.output_dropout = 0.0  # Directly set the float value
+        # Handle the final layer normalization renaming
+        new_key = new_key.replace("layernorm_before", "self_attn_layer_norm")
+        new_key = new_key.replace("layernorm_after", "final_layer_norm")
 
-        # Disable general dropout in the layer if applicable
-        if hasattr(layer, 'dropout'):
-            if isinstance(layer.dropout, nn.Dropout):
-                layer.dropout.p = 0.0
-            elif isinstance(layer.dropout, float):
-                layer.dropout = 0.0  # Directly set the float value
+        new_state_dict[new_key] = state_dict[key]
 
-    print("[MERT] - Disabled all dropouts in the encoder's layers by setting p=0.0 where applicable")
+    return new_state_dict
+
+def average_weights(mapped_state_dicts):
+    """Averages the weights from multiple state_dicts."""
+    avg_dict = collections.OrderedDict()
+
+    keys = mapped_state_dicts[0].keys()
+    for key in keys:
+        weights = [sd[key] for sd in mapped_state_dicts]
+        avg_dict[key] = torch.mean(torch.stack(weights), dim=0)
+
+    return avg_dict
 
 
-def disable_AST_encoder_dropout(model):
-    """Disable all dropouts in the encoder layers of the ASTModel by setting their probabilities to 0.0."""
 
-    # Disable encoder layer dropout if available in config
-    if hasattr(model.config, 'encoder_layerdrop'):
-        model.config.encoder_layerdrop = 0.0  # Set encoder layer dropout to 0
-
-    # Iterate through all encoder layers and disable their dropouts by setting p=0.0
-    for layer in model.encoder.layer:  # Access each ASTLayer in the encoder
-        # Disable attention dropout within ASTAttention
-        if hasattr(layer, 'attention') and hasattr(layer.attention, 'attention'):
-            attention = layer.attention.attention
-            if hasattr(attention, 'dropout') and isinstance(attention.dropout, nn.Dropout):
-                attention.dropout.p = 0.0  # Set attention dropout to 0.0
-
-        # Disable output dropout within ASTSelfOutput
-        if hasattr(layer, 'attention') and hasattr(layer.attention, 'output'):
-            output = layer.attention.output
-            if hasattr(output, 'dropout') and isinstance(output.dropout, nn.Dropout):
-                output.dropout.p = 0.0  # Set output dropout to 0.0
-
-        # Disable intermediate dropout within ASTIntermediate
-        if hasattr(layer, 'intermediate'):
-            intermediate = layer.intermediate
-            if hasattr(intermediate, 'intermediate_act_fn'):
-                act_fn = intermediate.intermediate_act_fn
-                if isinstance(act_fn, nn.Dropout):
-                    act_fn.p = 0.0  # Set intermediate activation dropout to 0.0
-
-        # Disable output dropout within ASTOutput
-        if hasattr(layer, 'output'):
-            output = layer.output
-            if hasattr(output, 'dropout') and isinstance(output.dropout, nn.Dropout):
-                output.dropout.p = 0.0  # Set output dropout to 0.0
-
-        # Disable any general dropout in the layer if applicable
-        if hasattr(layer, 'dropout') and isinstance(layer.dropout, nn.Dropout):
-            layer.dropout.p = 0.0
-
-    print("[AST] - Disabled all dropouts in the encoder's layers by setting p=0.0 where applicable")
 
 class UpstreamPretrainExpert(nn.Module):
     """
@@ -428,7 +397,7 @@ class MultiDistillerForPretrain(nn.Module):
             elif model_name == 'ast':
                 temp_config = AutoConfig.from_pretrained("MIT/ast-finetuned-audioset-10-10-0.4593")
                 temp_config.output_hidden_states = True  # Enable output of hidden states
-                self.temporal_alignment = TemporalAligner()
+                #self.temporal_alignment = TemporalAligner()
                 #temp_config.max_length = 1598
                 temp_config.ignore_mismatched_sizes = True
                 teacher_3 = ASTModel.from_pretrained("MIT/ast-finetuned-audioset-10-10-0.4593", config=temp_config).to(device)
@@ -448,6 +417,91 @@ class MultiDistillerForPretrain(nn.Module):
                 disable_AST_encoder_dropout(teacher_3)
                 self.teacher_models[model_name] = teacher_3
                 self.teacher_processors[model_name] = teacher_3_processor
+            
+            elif model_name == "ssast-patch":
+                ast_config = ASTConfig(
+                    architectures=["ASTModel"],
+                    frequency_stride=16,
+                    time_stride=16,
+                    hidden_size=768,
+                    max_length=1024,
+                    num_attention_heads=12,
+                    num_hidden_layers=12,
+                    num_mel_bins=128,
+                    qkv_bias=True,
+                    output_hidden_states = True
+                    )
+                teacher_3 = ASTModel(config=ast_config)
+                teacher_3_processor = AutoProcessor.from_pretrained("MIT/ast-finetuned-audioset-10-10-0.4593")
+                ssast_state_dict = torch.load("./ssast_checkpoints/SSAST-Base-Patch-400.pth")
+                self.temporal_alignment = TemporalAligner()
+                teacher_3_processor.do_normalize = True # I need to modify this later as well.
+                teacher_3_processor.mean = self.config.fbank_mean
+                teacher_3_processor.std = self.config.fbank_std
+                print(f"teacher_3_processor is {teacher_3_processor}")
+                converted = convert_ssast_state_dict_to_astmodel(ssast_state_dict)
+                teacher_3.load_state_dict(converted, strict=True)
+                teacher_3 = teacher_3.to("cuda")
+                disable_AST_encoder_dropout(teacher_3)
+                self.teacher_models[model_name] = teacher_3
+                self.teacher_processors[model_name] = teacher_3_processor
+
+            elif model_name == "ssast-frame-local":
+                #teacher_3 = ASTModel(config=ast_config)
+                from pretrain.multi_distiller.ast_models import ASTModel as ASTModelLocal
+                teacher_3 = ASTModelLocal(fstride=128,
+                    fshape=128, 
+                    tshape=2,
+                    tstride=2,
+                    input_tdim=1024,
+                    input_fdim=128,
+                    pretrain_stage=False,
+                    model_size='base',
+                    load_pretrained_mdl_path="./ssast_checkpoints/SSAST-Base-Frame-400.pth")
+                
+                teacher_3_processor = AutoProcessor.from_pretrained("MIT/ast-finetuned-audioset-10-10-0.4593")
+                self.temporal_alignment = TemporalAligner()
+                teacher_3_processor.do_normalize = True # I need to modify this later as well.
+                teacher_3_processor.mean = self.config.fbank_mean
+                teacher_3_processor.std = self.config.fbank_std
+                teacher_3 = teacher_3.to("cuda")
+                disable_SSAST_encoder_dropout(teacher_3)
+                self.teacher_models[model_name] = teacher_3
+                self.teacher_processors[model_name] = teacher_3_processor
+            
+            elif model_name == "ssast-frame":
+                ast_config = ASTConfig(
+                    frequency_stride=128,
+                    fshape=128, 
+                    tshape=2,
+                    time_stride=2,
+                    patch_size=16,
+                    hidden_size=768,
+                    max_length=1024,
+                    num_attention_heads=12,
+                    num_hidden_layers=12,
+                    num_mel_bins=128,
+                    qkv_bias=True,
+                    output_hidden_states = True
+                    )
+                teacher_3 = ASTModel(config=ast_config)
+                teacher_3_processor = AutoProcessor.from_pretrained("MIT/ast-finetuned-audioset-10-10-0.4593")
+                ssast_state_dict = torch.load("./ssast_checkpoints/SSAST-Base-Frame-400.pth")
+                self.temporal_alignment = TemporalAligner()
+                teacher_3_processor.do_normalize = True # I need to modify this later as well.
+                teacher_3_processor.mean = self.config.fbank_mean
+                teacher_3_processor.std = self.config.fbank_std
+                print(f"teacher_3_processor is {teacher_3_processor}")
+                converted = convert_ssast_state_dict_to_astmodel(ssast_state_dict)
+                #converted['embeddings.position_embeddings'] = converted['embeddings.position_embeddings'][:, :507, :]
+                #pdb.set_trace()
+                teacher_3.load_state_dict(converted, strict=True)
+                teacher_3 = teacher_3.to("cuda")
+                disable_AST_encoder_dropout(teacher_3)
+                self.teacher_models[model_name] = teacher_3
+                self.teacher_processors[model_name] = teacher_3_processor
+
+
             else:
                 print(f"Warning: Unknown teacher model {model_name} specified.")
             
@@ -643,11 +697,16 @@ class MultiDistillerForPretrain(nn.Module):
                         teacher_hiddens = teacher(wave_orig)
                     elif model_name == 'mert_v0_public':
                         teacher_hiddens = teacher(wave_orig)
-                    elif model_name == 'ast':
+                    elif model_name == 'ast' or model_name.startswith("ssast"):
                         inputs = self.teacher_processors[model_name](wave_orig.cpu().numpy(), sampling_rate=16000, return_tensors="pt",return_attention_mask=True)
-                        inputs = {key: value.to('cuda:0') for key, value in inputs.items()}
-
-                        teacher_hiddens = teacher(**inputs)
+                        if model_name =="ssast-frame-local":
+                            teacher_hiddens, _ = teacher(inputs["input_values"].cuda())
+                            teacher_hiddens = torch.stack(teacher_hiddens)
+                            padded_hidden_states = F.pad(teacher_hiddens, (0, 0, 0, 0, 0, 0, 1, 0)) # Adds one dimension from 12 to 13 at the start
+                            teacher_hiddens = {"hidden_states": padded_hidden_states}
+                        else:
+                            inputs = {key: value.to('cuda:0') for key, value in inputs.items()}
+                            teacher_hiddens = teacher(**inputs)
 
                     # Extract hidden states based on task embedding type
                     if self.config.task_emb_type in ["expand-last", "hnet", "self-hidden"]:

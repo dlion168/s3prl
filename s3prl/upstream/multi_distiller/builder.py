@@ -16,7 +16,7 @@ from torch.nn.utils.rnn import pad_sequence
 
 import s3prl.optimizers
 
-from .model import DistillerConfig, DistillerModel
+from .model import MultiDistillerConfig, MultiDistillerModel
 
 
 class DistillerBuilder(nn.Module):
@@ -27,6 +27,7 @@ class DistillerBuilder(nn.Module):
 
     def __init__(self, options, config, verbose=False):
         super().__init__()
+        
 
         # read config
         if config is not None:
@@ -50,14 +51,14 @@ class DistillerBuilder(nn.Module):
         self.permute_input = bool(strtobool(options["permute_input"]))
 
         # Set model config
-        self.model_config = DistillerConfig(self.config["distiller"])
+        self.model_config = MultiDistillerConfig(self.config["multi_distiller"])
         self.hidden_size = self.model_config.encoder_embed_dim
         self.max_input_length = 0
 
         if self.max_input_length > 0 and verbose:
             print("[DistillerBuilder] - Maximum input length: ", self.max_input_length)
 
-    def load_model(self, model, state_dict, verbose=False):
+    def load_model(self, model, state_dict, verbose=True):
         try:
             model.load_state_dict(state_dict)
             if verbose:
@@ -108,7 +109,7 @@ class PretrainedDistiller(DistillerBuilder):
         super().__init__(options, config, verbose)
 
         # Build model
-        self.model = DistillerModel(self.model_config)
+        self.model = MultiDistillerModel(self.model_config)
         self.model.eval() if self.no_grad else self.model.train()
         self.out_dim = self.hidden_size
 

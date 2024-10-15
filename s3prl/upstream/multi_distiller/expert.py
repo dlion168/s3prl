@@ -34,7 +34,6 @@ class UpstreamExpert(UpstreamBase):
             }
 
         options["ckpt_file"] = ckpt
-
         self.model = PretrainedDistiller(options)
 
     def get_downsample_rates(self, key: str) -> int:
@@ -45,11 +44,12 @@ class UpstreamExpert(UpstreamBase):
             wavs, get_hidden=True, no_pred=no_pred
         )
         # pred: B x N x T x D
-        if not no_pred:
-            hidden_feats = pred.transpose(0, 1).split(1, 0)
-            hidden_feats = [hid.squeeze(0) for hid in hidden_feats]
-        else:
-            hidden_feats = []
+        # if not no_pred:
+        #     hidden_feats = pred.transpose(0, 1).split(1, 0)
+        #     hidden_feats = [hid.squeeze(0) for hid in hidden_feats]
+        # else:
+        #     
+        hidden_feats = []
         hidden_feats = [feat_final] + layer_hidden + hidden_feats
 
         states = {
