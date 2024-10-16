@@ -39,7 +39,10 @@ class FluentCommandsDataset(Dataset):
         if self.features_path:
             feature_path = os.path.join(self.features_path, self.upstream_name, f"{Path(wav_path).stem}.pt")
             if os.path.exists(feature_path):
-                feature = torch.load(feature_path)
+                try:
+                    feature = torch.load(feature_path)
+                except:
+                    print(feature_path)
                 return feature, label, True
 
         return wav.numpy(), np.array(label), Path(wav_path).stem

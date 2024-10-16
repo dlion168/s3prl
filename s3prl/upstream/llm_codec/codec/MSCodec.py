@@ -1,19 +1,15 @@
-import json
 import math
 from typing import List, Tuple
 
 import numpy as np
-import torch
-from torch import nn
 
 from .layers import Encoder, Decoder
 from .vq import ResidualVectorQuantizeLLM
 
 import torch
 import torch.nn as nn
-from functools import partial
 from transformers import BertTokenizer, BertModel
-from transformers import T5Tokenizer, T5EncoderModel, AutoTokenizer
+from transformers import T5Tokenizer, T5EncoderModel
 
 class AbstractEncoder(nn.Module):
     def __init__(self):
@@ -129,14 +125,14 @@ class MSCodecLM(nn.Module):
             g_ckpt =g_ckpt,
             use_cblinear=use_cblinear,
         )
-        self.decoder = Decoder(
-            latent_dim,
-            decoder_dim,
-            decoder_rates,
-            noise,
-            depthwise=depthwise,
-            attn_window_size=attn_window_size,
-        )
+        # self.decoder = Decoder(
+        #     latent_dim,
+        #     decoder_dim,
+        #     decoder_rates,
+        #     noise,
+        #     depthwise=depthwise,
+        #     attn_window_size=attn_window_size,
+        # )
 
     def get_lcm(self, a, b):
         return abs(a * b) // math.gcd(a, b)
@@ -154,15 +150,15 @@ class MSCodecLM(nn.Module):
         audio_data = nn.functional.pad(audio_data, (0, right_pad)) # make padding
         return audio_data
 
-    def forward(self, audio_data: torch.Tensor, features=None, text_features=None) -> Tuple[torch.Tensor, List[torch.Tensor]]:
-        length = audio_data.shape[-1]
-        #print('length ', length)
-        audio_data = self.preprocess(audio_data)
-        #print('audio_data ', audio_data.shape)
-        z = self.encoder(audio_data) # encode the audio
-        z_q, codes, commitment_loss, codebook_loss, semantic_loss, consistency_loss = self.quantizer(z, features, text_features)
-        audio_hat = self.decoder(z_q)
-        return audio_hat[..., :length], codes, commitment_loss, codebook_loss, semantic_loss, consistency_loss
+    # def forward(self, audio_data: torch.Tensor, features=None, text_features=None) -> Tuple[torch.Tensor, List[torch.Tensor]]:
+    #     length = audio_data.shape[-1]
+    #     #print('length ', length)
+    #     audio_data = self.preprocess(audio_data)
+    #     #print('audio_data ', audio_data.shape)
+    #     z = self.encoder(audio_data) # encode the audio
+    #     z_q, codes, commitment_loss, codebook_loss, semantic_loss, consistency_loss = self.quantizer(z, features, text_features)
+    #     audio_hat = self.decoder(z_q)
+    #     return audio_hat[..., :length], codes, commitment_loss, codebook_loss, semantic_loss, consistency_loss
 
     def encode(self, audio_data: torch.Tensor) -> List[torch.Tensor]:
         audio_data = self.preprocess(audio_data)
@@ -172,21 +168,21 @@ class MSCodecLM(nn.Module):
         z_q, codes, commitment_loss, codebook_loss, semantic_loss, consistency_loss = self.quantizer(z)
         return z_q, codes
 
-    def decode(self, codes: List[torch.Tensor]) -> torch.Tensor:
-        z_q = self.quantizer.from_codes(codes)
-        audio_hat = self.decoder(z_q)
-        return audio_hat
+    # def decode(self, codes: List[torch.Tensor]) -> torch.Tensor:
+    #     z_q = self.quantizer.from_codes(codes)
+    #     audio_hat = self.decoder(z_q)
+    #     return audio_hat
 
-    @classmethod
-    def from_config(cls, config_path):
-        with open(config_path, "r") as f:
-            config = json.load(f)
-        model = cls(**config)
-        return model
+    # @classmethod
+    # def from_config(cls, config_path):
+    #     with open(config_path, "r") as f:
+    #         config = json.load(f)
+    #     model = cls(**config)
+    #     return model
 
-    def inference(self, x):
-        codes = self.encode(x)
-        # print('codes ', codes)
-        # assert 1==2
-        wav = self.decode(codes)
-        return wav, codes
+    # def inference(self, x):
+    #     codes = self.encode(x)
+    #     # print('codes ', codes)
+    #     # assert 1==2
+    #     wav = self.decode(codes)
+    #     return wav, codes

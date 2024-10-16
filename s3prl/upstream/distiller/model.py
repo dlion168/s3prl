@@ -204,6 +204,8 @@ class DistillerModel(nn.Module):
             n_sz = 1
         b_sz, t_sz, _ = feat.shape
 
+        import pdb
+
         if self.task_emb_type == "add":
             # Add embs to feature
             if self.post_extract_proj is not None:

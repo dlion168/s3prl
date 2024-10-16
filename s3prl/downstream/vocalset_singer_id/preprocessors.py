@@ -64,8 +64,8 @@ def partition(aud, max_ms=3000):
 
 
 if __name__ == "__main__":
-  unzip_dir = '/groups/ycevan/datasets/VocalSet/audio/'
-  zip_dir = '/groups/ycevan/datasets/VocalSet/VocalSet.zip'
+  unzip_dir = '/export/home2/fabian/corpus/superb/vocalset/audio/'
+  zip_dir = '/export/home2/fabian/corpus/superb/vocalset/VocalSet.zip'
   archive = zipfile.ZipFile(zip_dir)
 
 

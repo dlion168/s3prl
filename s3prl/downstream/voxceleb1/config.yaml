@@ -3,7 +3,7 @@
 runner:
   total_steps: 200000
   gradient_clipping: 1
-  gradient_accumulate_steps: 4
+  gradient_accumulate_steps: 1
 
   log_step: 500
   eval_step: 5000
@@ -16,7 +16,7 @@ runner:
 optimizer:
   name: TorchOptim
   torch_optim_name: Adam
-  lr: 1.0e-4
+  lr: 1.0e-2
 
 # # comment the whole scheduler config block to disable learning rate scheduling
 # scheduler:
@@ -25,10 +25,10 @@ optimizer:
 
 downstream_expert: 
   datarc:
-    file_path: /path/to/VoxCeleb1
+    file_path: /livingrooms/public/superb/VoxCeleb1
     meta_data: ./downstream/voxceleb1/veri_test_class.txt
-    num_workers: 12
-    train_batch_size: 8
+    num_workers: 8
+    train_batch_size: 32
     eval_batch_size: 1
     max_timestep: 128000
 

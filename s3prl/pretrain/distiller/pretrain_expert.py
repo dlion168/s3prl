@@ -276,6 +276,7 @@ class DistillerForPretrain(nn.Module):
                 else:
                     teacher_hiddens = teacher_hiddens["hidden_states"][1:]
                 teacher_hiddens = torch.stack(teacher_hiddens, dim=1)  # B x N x T x D
+        import pdb
 
         # Compute all objectives
         (
@@ -363,7 +364,7 @@ class DistillerForPretrain(nn.Module):
             sim_layer_loss = None
 
         # Feature loss
-        feat_pen = feat.float().pow(2).mean()
+        feat_pen = feat.float().pow(2).mean() #penalizing big features....
 
         total_loss = (
             rec_loss
