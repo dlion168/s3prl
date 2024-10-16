@@ -39,7 +39,7 @@ class MTGMoodAudioDataset(data.Dataset):
             audio_path = audio_path.replace('.mp3', '.low.mp3')
         class_name = self.all_tags[index]
         
-        wav, sr = torchaudio.load(os.path.join(self.audio_dir, "audio-low", audio_path))
+        wav, sr = torchaudio.load(os.path.join(self.audio_dir, "audio-low", audio_path), backend="soundfile")
         wav = torchaudio.functional.resample(wav, orig_freq=sr, new_freq=self.sample_rate)
         audio = wav.squeeze()
         

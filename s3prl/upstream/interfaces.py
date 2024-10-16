@@ -50,6 +50,7 @@ class UpstreamBase(nn.Module, metaclass=initHook):
         super().__init__()
         self.hooks: List[Hook] = [Hook(*hook) for hook in hooks] if hooks else []
         self.hook_postprocess = hook_postprocess
+        self.sample_rate = 16000
         self._hook_hiddens: List[Tuple(str, Tensor)] = []
 
     def remove_all_hooks(self):

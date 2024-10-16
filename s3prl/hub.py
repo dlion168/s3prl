@@ -40,6 +40,13 @@ from s3prl.upstream.pandagpt.hubconf import *
 from s3prl.upstream.speechgpt.hubconf import *
 from s3prl.upstream.imagebind.hubconf import *
 from s3prl.upstream.hf_whisper.hubconf import *
+from s3prl.upstream.llm_codec.hubconf import *
+from s3prl.upstream.blsp.hubconf import *
+from s3prl.upstream.blsp_emo.hubconf import *
+from s3prl.upstream.llasm.hubconf import *
+from s3prl.upstream.salmonn.hubconf import *
+from s3prl.upstream.qwen_audio.hubconf import *
+from s3prl.upstream.hf_mert.hubconf import *
 # from s3prl.upstream.mullama.hubconf import *
 
 

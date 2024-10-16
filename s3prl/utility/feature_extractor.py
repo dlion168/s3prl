@@ -65,18 +65,21 @@ def process_audio_files(audio_files, FeatureExtractor, args, device):
 
             all_features_per_audio = []  # Store chunk-wise features
             chunk_lengths = []  # Store the number of features in each chunk
-            print(f"args.sliding_window_size_in_sec")
             if args.sliding_window_size_in_sec:
                 assert args.sliding_window_size_in_sec > 0, "sliding_window_size_in_sec must be positive"
                 overlap_in_sec = args.sliding_window_size_in_sec * args.sliding_window_overlap_in_percent / 100
                 chunk_size = int(args.target_sr * args.sliding_window_size_in_sec)  # Window size in samples
                 step_size = int(args.target_sr * (args.sliding_window_size_in_sec - overlap_in_sec))  # Step size for sliding
-
-                num_chunks = (waveform.shape[1] // step_size)
+                num_chunks = (waveform.shape[1] // step_size) + int(waveform.shape[1] % step_size != 0)
 
                 for chunk_idx in range(num_chunks):
                     start_idx = chunk_idx * step_size
-                    chunk = waveform[:, start_idx: start_idx + chunk_size]
+                    if (chunk_idx == num_chunks-1):
+                        if waveform.shape[1] - start_idx < args.target_sr*0.1:
+                            break
+                        chunk = waveform[:, start_idx: ]
+                    else:
+                        chunk = waveform[:, start_idx: start_idx + chunk_size]
 
                     # Pass chunk through the model and extract features
                     features = FeatureExtractor.model(chunk)["hidden_states"]
@@ -113,7 +116,6 @@ def process_audio_files(audio_files, FeatureExtractor, args, device):
             else:
                 # Pass chunk through the model and extract features
                 features = FeatureExtractor.model(waveform)["hidden_states"]
-                print(len(features),len(features[0]), len(features[0][0]), len(features[0][0][0]))
                 num_layers = len(features)
                 if args.reduction == "mean":
                     final_features = [torch.squeeze(torch.mean(f, 1)).cpu() for f in features]

@@ -36,7 +36,7 @@ class InstrumentDataset(data.Dataset):
         }
         self.id2class = {v: k for k, v in self.class2id.items()}
         self.return_audio_path = return_audio_path
-        self.sample_rate = 16000
+        self.sample_rate = kwargs['sample_rate']
         self.sample_duration = sample_duration * self.sample_rate if sample_duration else None
         self.upstream_name = kwargs['upstream']
         self.features_path = kwargs['features_path']
@@ -104,6 +104,7 @@ class InstrumentFeatureDataset(data.Dataset):
         }
         self.id2class = {v: k for k, v in self.class2id.items()}
         self.return_audio_path = return_audio_path
+        self.split = split 
         self.upstream_name = kwargs['upstream']
         self.features_path = kwargs['features_path']
     
@@ -113,7 +114,7 @@ class InstrumentFeatureDataset(data.Dataset):
     def __getitem__(self, index):
         audio_path = self.metadata[index][0]
         
-        feature = torch.load(os.path.join(self.feature_dir, audio_path), map_location="cpu")
+        feature = torch.load(os.path.join(self.feature_dir, f"nsynth-{self.split}", "audio", audio_path.replace(".wav", ".pt")), map_location="cpu")
         if len(feature[0].shape) == 1:
             feature = [f.unsqueeze(0).unsqueeze(0) for f in feature]
         elif len(feature.shape) == 2:

@@ -54,6 +54,7 @@ class DownstreamExpert(nn.Module):
             'train',
             upstream=kwargs['upstream'],
             features_path=kwargs['features_path'],
+            sample_rate = kwargs["sample_rate"]
         )
         self.dev_dataset = InstrumentFeatureDataset(
             self.datarc['meta_data'], 
@@ -66,6 +67,7 @@ class DownstreamExpert(nn.Module):
             'dev',
             upstream=kwargs['upstream'],
             features_path=kwargs['features_path'],
+            sample_rate = kwargs["sample_rate"]
         )
         self.test_dataset = InstrumentFeatureDataset(
             self.datarc['meta_data'],
@@ -78,6 +80,7 @@ class DownstreamExpert(nn.Module):
             'test',
             upstream=kwargs['upstream'],
             features_path=kwargs['features_path'],
+            sample_rate = kwargs["sample_rate"]
         )
         
         model_cls = eval(self.modelrc['select'])

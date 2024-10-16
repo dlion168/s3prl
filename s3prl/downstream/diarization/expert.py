@@ -43,6 +43,7 @@ class DownstreamExpert(nn.Module):
         self.upstream_dim = upstream_dim
         self.upstream_rate = upstream_rate
         self.datarc = downstream_expert["datarc"]
+        self.sample_rate = kwargs["sample_rate"]
 
         config_frame_shift = self.datarc.get("frame_shift")
         if isinstance(config_frame_shift, int):
@@ -113,7 +114,7 @@ class DownstreamExpert(nn.Module):
             dataset = DiarizationDataset(
                 mode,
                 self.loaderrc[f"{mode}_dir"],
-                **self.datarc,
+                **dict(self.datarc, rate = self.sample_rate)
             )
             setattr(self, f"{mode}_dataset", dataset)
 

@@ -32,7 +32,7 @@ class SingerDataset(data.Dataset):
     def __getitem__(self, index):
         audio_path = self.metadata.iloc[index][0]
         
-        wav, sr = torchaudio.load(os.path.join(self.audio_dir, "audio", audio_path))
+        wav, sr = torchaudio.load(os.path.join(self.audio_dir, "audio", audio_path), backend="soundfile")
         wav = torchaudio.functional.resample(wav, orig_freq=sr, new_freq=self.sample_rate)
         audio = wav.squeeze()
 
@@ -86,7 +86,7 @@ class SingerFeatureDataset(data.Dataset):
         feature = torch.load(os.path.join(self.feature_dir, "audio", audio_path.replace(".wav", ".pt")), map_location="cpu")
         if len(feature[0].shape) == 1:
             feature = [f.unsqueeze(0).unsqueeze(0) for f in feature]
-        elif len(feature.shape) == 2:
+        elif len(feature[0].shape) == 2:
             feature = [f.unsqueeze(0) for f in feature]
         
         label = self.class2id[audio_path.split('/')[1].split('_')[0]]

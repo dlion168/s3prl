@@ -161,15 +161,40 @@ def chunk_audio(
     # print(f'wavs tensor shape: {wavs.shape}') torch.Size([7, 1, 80000])
     return wavs
 
-
 def find_audios(
     parent_dir, 
-    exts=['.wav', '.mp3', '.flac', '.webm', '.mp4']
+    feature_dir,
+    exts=['.wav', '.mp3', '.flac', '.webm', '.mp4'],
+    keep_folder_structure=True
 ):
     audio_files = []
+    
     for root, dirs, files in os.walk(parent_dir):
         for file in files:
+            # Check if the file has a valid audio extension
             if os.path.splitext(file)[1] in exts:
-                audio_files.append(os.path.join(root, file))
+                # Get the full path of the audio file
+                audio_file_path = os.path.join(root, file)
+                
+                if keep_folder_structure:
+                    # Compute the relative path of the audio file from the parent_dir
+                    relative_path = os.path.relpath(audio_file_path, parent_dir)
+                    
+                    # Replace the audio file extension with '.pt'
+                    pt_file_relative_path = os.path.splitext(relative_path)[0] + '.pt'
+                    
+                    # Build the corresponding path in the feature_dir (with folder structure)
+                    pt_file_path = os.path.join(feature_dir, pt_file_relative_path)
+                
+                else:
+                    # If folder structure is not maintained, all .pt files are directly under feature_dir
+                    pt_file_name = os.path.splitext(file)[0] + '.pt'
+                    
+                    # Build the .pt file path in feature_dir (without folder structure)
+                    pt_file_path = os.path.join(feature_dir, pt_file_name)
+                
+                # Check if the .pt file exists, if it does, skip the audio file
+                if not os.path.exists(pt_file_path):
+                    audio_files.append(audio_file_path)
+    
     return audio_files
-

@@ -11,7 +11,7 @@ from torch.distributed import is_initialized
 from torch.nn.utils.rnn import pad_sequence
 #-------------#
 from ..model import *
-from .dataset import VocalTechniqueDataset
+from .dataset import VocalTechniqueDataset, VocalTechniqueFeatureDataset
 from argparse import Namespace
 from pathlib import Path
 
@@ -28,29 +28,51 @@ class DownstreamExpert(nn.Module):
         self.datarc = downstream_expert['datarc']
         self.modelrc = downstream_expert['modelrc']
         self.expdir = expdir
+        self.pre_extract_dir = kwargs["pre_extract_dir"]
 
         root_dir = Path(self.datarc['file_path'])
 
-        self.train_dataset = VocalTechniqueDataset(
+        self.train_dataset = VocalTechniqueFeatureDataset(
+            self.pre_extract_dir,
+            self.datarc['meta_data'], 
+            'train',
+            upstream = kwargs['upstream'],
+            features_path = kwargs['features_path'],
+        )if self.pre_extract_dir else VocalTechniqueDataset(
             root_dir, 
             self.datarc['meta_data'], 
             'train',
-            upstream=kwargs['upstream'],
-            features_path=kwargs['features_path'],
+            upstream = kwargs['upstream'],
+            features_path = kwargs['features_path'],
+            sample_rate = kwargs["sample_rate"]
         )
-        self.dev_dataset = VocalTechniqueDataset(
+        self.dev_dataset = VocalTechniqueFeatureDataset(
+            self.pre_extract_dir,
+            self.datarc['meta_data'], 
+            'dev',
+            upstream = kwargs['upstream'],
+            features_path = kwargs['features_path']
+        )if self.pre_extract_dir else VocalTechniqueDataset(
             root_dir, 
             self.datarc['meta_data'], 
             'dev',
-            upstream=kwargs['upstream'],
-            features_path=kwargs['features_path']
+            upstream = kwargs['upstream'],
+            features_path = kwargs['features_path'],
+            sample_rate = kwargs["sample_rate"]
         )
-        self.test_dataset = VocalTechniqueDataset(
+        self.test_dataset = VocalTechniqueFeatureDataset(
+            self.pre_extract_dir,
+            self.datarc['meta_data'], 
+            'test',
+            upstream = kwargs['upstream'],
+            features_path = kwargs['features_path']
+        )if self.pre_extract_dir else VocalTechniqueDataset(
             root_dir, 
             self.datarc['meta_data'], 
             'test',
-            upstream=kwargs['upstream'],
-            features_path=kwargs['features_path']
+            upstream = kwargs['upstream'],
+            features_path = kwargs['features_path'],
+            sample_rate = kwargs["sample_rate"]
         )
         
         model_cls = eval(self.modelrc['select'])

@@ -40,3 +40,11 @@ def speechgpt(refresh=False, *args, **kwargs):
     kwargs["km_ckpt"] = "https://dl.fbaipublicfiles.com/hubert/mhubert_base_vp_en_es_fr_it3_L11_km1000.bin"
     return speechgpt_url(refresh=refresh, *args, **kwargs)
 
+def speechgpt_enc_feat(*args, **kwargs):
+    return speechgpt(feat_mode = "encoder", *args, **kwargs)
+
+def speechgpt_km_cent(*args, **kwargs):
+    return speechgpt(feat_mode = "kmeans_centroid", *args, **kwargs)
+
+def speechgpt_lm_code(*args, **kwargs):
+    return speechgpt(feat_mode = "lm_codebook", *args, **kwargs)

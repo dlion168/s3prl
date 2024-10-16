@@ -87,7 +87,8 @@ def get_downstream_args():
     parser.add_argument('--cache_dir', help='The cache directory for pretrained model downloading')
     parser.add_argument('--verbose', action='store_true', help='Print model infomation')
     parser.add_argument('--disable_cudnn', action='store_true', help='Disable CUDNN')
-    parser.add_argument('--features_path', type=str)
+    parser.add_argument('--features_path', help='The option for online feature saving.', type=str)
+    parser.add_argument('--pre_extract_dir', help='The path for using offline feature preextracted by utility/feature_extractor.', type=str)
 
     args = parser.parse_args()
     backup_files = []
@@ -219,7 +220,7 @@ def main():
         torch.backends.cudnn.deterministic = True
         torch.backends.cudnn.benchmark = False
 
-    if args.features_path:
+    if args.features_path or args.pre_extract_dir:
         runner = FeatRunner(args, config)
     else:
         runner = Runner(args, config)

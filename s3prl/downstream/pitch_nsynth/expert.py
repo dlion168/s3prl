@@ -23,7 +23,7 @@ from torch.distributed import is_initialized
 from torch.nn.utils.rnn import pad_sequence
 #-------------#
 from ..model import *
-from .dataset import PitchClassiDataset
+from .dataset import PitchClassiDataset, PitchClassiFeatureDataset
 from argparse import Namespace
 from pathlib import Path
 
@@ -41,24 +41,46 @@ class DownstreamExpert(nn.Module):
         self.datarc = downstream_expert['datarc']
         self.modelrc = downstream_expert['modelrc']
         self.expdir = expdir
+        self.pre_extract_dir = kwargs["pre_extract_dir"]
 
-        self.train_dataset = PitchClassiDataset(
+        self.train_dataset = PitchClassiFeatureDataset(
+            self.pre_extract_dir,
             self.datarc['meta_data'], 
             'train',
             upstream=kwargs['upstream'],
             features_path=kwargs['features_path'],
+        )if self.pre_extract_dir else PitchClassiDataset(
+            self.datarc['meta_data'], 
+            'train',
+            upstream=kwargs['upstream'],
+            features_path=kwargs['features_path'],
+            sample_rate = kwargs["sample_rate"]
         )
-        self.dev_dataset = PitchClassiDataset(
+        self.dev_dataset = PitchClassiFeatureDataset(
+            self.pre_extract_dir,
+            self.datarc['meta_data'], 
+            'dev',
+            upstream=kwargs['upstream'],
+            features_path=kwargs['features_path']
+        )if self.pre_extract_dir else PitchClassiDataset(
             self.datarc['meta_data'], 
             'dev',
             upstream=kwargs['upstream'],
             features_path=kwargs['features_path'],
+            sample_rate = kwargs["sample_rate"]
         )
-        self.test_dataset = PitchClassiDataset(
+        self.test_dataset = PitchClassiFeatureDataset(
+            self.pre_extract_dir,
+            self.datarc['meta_data'], 
+            'test',
+            upstream=kwargs['upstream'],
+            features_path=kwargs['features_path']
+        )if self.pre_extract_dir else PitchClassiDataset(
             self.datarc['meta_data'], 
             'test',
             upstream=kwargs['upstream'],
             features_path=kwargs['features_path'],
+            sample_rate = kwargs["sample_rate"]
         )
         
         model_cls = eval(self.modelrc['select'])
