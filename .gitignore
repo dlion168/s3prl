@@ -140,6 +140,8 @@ data
 # checkpoints
 *.ckpt
 *.pth
+*.model
+*.bin
 
 # experiment files
 *.png
