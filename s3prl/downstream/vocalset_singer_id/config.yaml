@@ -1,4 +1,7 @@
+<<<<<<< HEAD
 
+=======
+>>>>>>> d097770799f127288ad45f37635b2ba7225cbaaa
 # this voxceleb1 is doing speaker classification task!
 runner:
   total_steps: 80000

@@ -12,9 +12,13 @@ from .module import (
     SplitLinear,
     TransformerEncoder,
 )
+from .feature_size import get_model_feature_size
+from omegaconf import DictConfig, OmegaConf
+from .feature_translators import build_feature_translator
 
 
-class DistillerConfig:
+
+class MultiDistillerConfig:
     """
     Configuration class
     """
@@ -77,13 +81,17 @@ class DistillerConfig:
             config.get("init_teacher_encoder_layers", False)
         )
 
+        self.teacher_names = config.get('teacher_names')
+        self.translator_kwargs = config.get('translator_kwargs')
+        self.translator_type = config.get('translator_type')
+        self.initialize_from = config.get('initialize_from')
 
-class DistillerModel(nn.Module):
+class MultiDistillerModel(nn.Module):
     """
-    Distiller Model
+    Multi-Distiller Model
     """
 
-    def __init__(self, config: DistillerConfig):
+    def __init__(self, config: MultiDistillerConfig):
         super().__init__()
 
         self.config = config
@@ -165,6 +173,20 @@ class DistillerModel(nn.Module):
         else:
             raise NotImplementedError(f"Unknown out layer type {config.out_layer_type}")
 
+        self.teacher_names = config.teacher_names
+        self.target_feature_sizes = {t: get_model_feature_size(t) for t in self.teacher_names}
+        self.backbone_feature_size = [12, 2, 176, 768]
+        # self.feature_translators = nn.ModuleDict({
+        #     'hubert_base': FeatureTranslator(feat_emb_dim, config.hubert_hidden_size),
+        #     'mert_v0_public': FeatureTranslator(feat_emb_dim, config.mert_hidden_size),
+        #     'ast': FeatureTranslator(feat_emb_dim, config.ast_hidden_size)
+        # })
+        #if self.target_feature_sizes:
+            #translator_kwargs = {} if config.translator_kwargs is None else config.translator_kwargs
+            #translator_kwargs["input_size"] = self.backbone_feature_size
+            #translator_kwargs["target_model_names"] = self.teacher_names
+            #self.translator = build_feature_translator(config.translator_type, **translator_kwargs)
+
     def forward_feature(self, wave, pad_mask):
         """Forward feature extractor"""
 
@@ -204,8 +226,6 @@ class DistillerModel(nn.Module):
             n_sz = 1
         b_sz, t_sz, _ = feat.shape
 
-        import pdb
-
         if self.task_emb_type == "add":
             # Add embs to feature
             if self.post_extract_proj is not None:
@@ -232,7 +252,7 @@ class DistillerModel(nn.Module):
             feat_final = feat_final.unsqueeze(1)
         # feat_final: B x N x T x D or B x 1 x T x D
 
-        pad_mask = pad_mask.unsqueeze(1).expand(-1, n_sz, -1).reshape(b_sz * n_sz, t_sz)
+        pad_mask = pad_mask.unsqueeze(1).expand(-1, n_sz, -1).reshape(b_sz * n_sz, t_sz) ### to mask on time dim,.
         # BN x T
         feat_final = feat_final.reshape(b_sz * n_sz, t_sz, -1)
         # BN x T x D
@@ -266,6 +286,12 @@ class DistillerModel(nn.Module):
             )
             # B x N x T x D
 
+        #translated_predictions = self.translator(pred, self.teacher_names) 
+
+        # if get_hidden:
+        #     return feat, feat_final, translated_predictions, pad_mask, layer_hiddens
+        # else:
+        #     return feat, feat_final, translated_predictions, pad_mask
         if get_hidden:
             return feat, feat_final, pred, pad_mask, layer_hiddens
         else:

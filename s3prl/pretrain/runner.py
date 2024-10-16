@@ -10,6 +10,7 @@
 ###############
 # IMPORTATION #
 ###############
+import pdb
 import os
 import math
 import glob
@@ -25,6 +26,55 @@ import numpy as np
 #-------------#
 from optimizers import get_optimizer, get_grouped_parameters
 from schedulers import get_scheduler
+
+def get_dataset_stats(loader):
+    import torchaudio
+    """
+    Compute the mean and standard deviation of the dataset on mel-spectrogram!.
+    """
+    count = 0
+    wav_sum = 0
+    wav_sqsum = 0
+
+    mean = []
+    std = []
+    target_length = 1024 # using the same of SSAST for now. It is harder to manipulate for now the parameter.
+    
+    for data in loader: ### batch iteration
+        audio_input, _ , audio_length, pad = data
+        wav_sum += torch.sum(audio_input)
+        wav_sqsum += torch.sum(audio_input**2)
+        count += audio_length.sum()
+        
+        fbank = torchaudio.compliance.kaldi.fbank(audio_input, htk_compat=True, sample_frequency=16000, use_energy=False,
+                                                  window_type='hanning', num_mel_bins=128, dither=0.0, frame_shift=10)
+        
+        n_frames = fbank.shape[0]
+        residual_frames = target_length - n_frames
+
+        # cut and pad
+        if residual_frames > 0:
+            m = torch.nn.ZeroPad2d((0, 0, 0, residual_frames))
+            fbank = m(fbank)
+        elif residual_frames < 0:
+            fbank = fbank[0:target_length, :]
+
+
+        cur_mean = torch.mean(fbank)
+        cur_std = torch.std(fbank)
+        mean.append(cur_mean.item())
+        std.append(cur_std.item())
+        #print(f"Batch mean: {cur_mean}, Batch std: {cur_std}")
+    
+    wav_mean = wav_sum / count
+    wav_var = (wav_sqsum / count) - (wav_mean**2)
+    wav_std = np.sqrt(wav_var)
+
+    mean_value_fbank = np.mean(mean)
+    std_value_fbank = np.mean(std)
+    print(f"Final dataset mean: {mean_value_fbank}, Final dataset std: {std_value_fbank}")
+
+    return wav_mean, wav_std, mean_value_fbank, std_value_fbank
 
 
 ##########
@@ -110,6 +160,19 @@ class Runner():
         train_batch_size = self.config['pretrain_expert']['datarc']['train_batch_size']
         print('[Runner] - Accumulated batch size:', train_batch_size * gradient_accumulate_steps)
         dataloader = self.upstream.get_train_dataloader()
+
+        print(f"self.config['pretrain_expert']['datarc']['data_stats']['wav_mean'] {self.config['pretrain_expert']['datarc']['data_stats']['wav_mean']}")
+        if not self.config['pretrain_expert']['datarc']['data_stats']['wav_mean']:
+            wav_mean, wav_std, mean_value_fbank, std_value_fbank = get_dataset_stats(dataloader)
+            self.config['pretrain_expert']['datarc']['data_stats']['wav_mean'] = wav_mean.cpu().item()
+            self.config['pretrain_expert']['datarc']['data_stats']['wav_std'] = wav_std.cpu().item()
+            self.config['pretrain_expert']['datarc']['data_stats']['fbank_mean'] = mean_value_fbank
+            self.config['pretrain_expert']['datarc']['data_stats']['fbank_std'] = std_value_fbank
+
+        
+        
+
+
 
         # set epoch
         n_epochs = self.config['runner']['n_epochs']
