@@ -424,11 +424,13 @@ class MultiDistillerForPretrain(nn.Module):
                 if model_name.find("hubert") >= 0 or model_name.find("wav2vec2") >= 0:
                     teacher_1.model.encoder.layerdrop = 0
                     print("[HuBERT] - Disabled teacher's encoder layerdrop")
+                    self.temporal_alignment = None
                 self.teacher_models[model_name] = teacher_1
             elif model_name == 'mert_v0_public':
+                self.temporal_alignment = None
                 temp_config = AutoConfig.from_pretrained("m-a-p/MERT-v0-public", trust_remote_code=True)
                 temp_config.output_hidden_states = True  # Enable hidden states in the output
-                teacher_2 = AutoModel.from_pretrained("m-a-p/MERT-v0-public", config=temp_config, trust_remote_code=True, output_hidden_states=True).to(device)
+                teacher_2 = AutoModel.from_pretrained("m-a-p/MERT-v0-public", config=temp_config, trust_remote_code=True).to(device)
                 disable_MERT_encoder_dropout(teacher_2)
                 self.teacher_models[model_name] = teacher_2
             elif model_name == 'ast':
@@ -665,7 +667,7 @@ class MultiDistillerForPretrain(nn.Module):
 
                 #### mising to load the transformer part with the weights of the 3 transormer teacher models.
                 ##### here I need to mix the three of them!.
-                print(f"[DistillerForPretrain] - Loading encoder layers from MERT")
+                print(f"[DistillerForPretrain] - Loading encoder layers from MERT, hubert and ssast")
                 for l in range(self.config.encoder_layers):
                     # Mapping MERT's HubertEncoderLayer to distilHuBERT's TransformerSentenceEncoderLayer
                     mert_encoder_layer = teacher_model_1.encoder.layers[l].state_dict()
@@ -948,15 +950,16 @@ class MultiDistillerForPretrain(nn.Module):
             aligned_preds = []  # To store aligned student features
             aligned_targets = []  # To store aligned teacher features
 
-            for i in range(pred.shape[1]): ### do this outside... is better and more efficient, capitalize one of the for already being done outside...
-                align_teacher, align_student = self.temporal_alignment(teacher_target[:,i,:,:], teacher_pred[:,i,:,:])
-                # Append the aligned features to the lists
-                aligned_preds.append(align_student.unsqueeze(1))  # Add back the layer dimension
-                aligned_targets.append(align_teacher.unsqueeze(1))  # Add back the layer dimension
+            if self.temporal_alignment:
+                for i in range(pred.shape[1]): ### do this outside... is better and more efficient, capitalize one of the for already being done outside...
+                    align_teacher, align_student = self.temporal_alignment(teacher_target[:,i,:,:], teacher_pred[:,i,:,:])
+                    # Append the aligned features to the lists
+                    aligned_preds.append(align_student.unsqueeze(1))  # Add back the layer dimension
+                    aligned_targets.append(align_teacher.unsqueeze(1))  # Add back the layer dimension
 
-            # Concatenate aligned layers back to 4D tensors (batch, layers, time, feature_dim)
-            teacher_pred = torch.cat(aligned_preds, dim=1)
-            teacher_target = torch.cat(aligned_targets, dim=1)
+                # Concatenate aligned layers back to 4D tensors (batch, layers, time, feature_dim)
+                teacher_pred = torch.cat(aligned_preds, dim=1)
+                teacher_target = torch.cat(aligned_targets, dim=1)
                     
 
 

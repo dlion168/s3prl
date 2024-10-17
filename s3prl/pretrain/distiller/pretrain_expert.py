@@ -85,6 +85,27 @@ class UpstreamPretrainExpert(nn.Module):
             pin_memory=True,
             collate_fn=dataset.collate_fn,
         )
+    
+    def _get_dev_dataloader(self):
+        dataset = OnlineWaveDataset(
+            self.upstream_config["task"],
+            self.datarc["dev_batch_size"],
+            target_level=self.upstream_config["audio"]["target_level"],
+            data_type='dev',
+            sets=self.datarc["devsets"],
+            **self.datarc,
+        )
+        #sampler = DistributedSampler(dataset) if is_initialized() else None
+
+        self.devloader = DataLoader(
+            dataset,
+            batch_size=1,  # for bucketing
+            shuffle=False,
+            num_workers=self.datarc["num_workers"],
+            drop_last=False,
+            pin_memory=True,
+            collate_fn=dataset.collate_fn
+        )
 
     # Interface
     def load_model(self, all_states):

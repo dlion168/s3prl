@@ -148,7 +148,7 @@ class Featurizer(nn.Module):
         self.name = "Featurizer"
 
         upstream.eval()
-        paired_wavs = [torch.randn(SAMPLE_RATE).to(upstream_device)]
+        paired_wavs = [torch.randn(upstream.sample_rate).to(upstream_device)]
         with torch.no_grad():
             paired_features = upstream(paired_wavs)
 

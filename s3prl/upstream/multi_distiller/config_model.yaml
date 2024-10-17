@@ -1,4 +1,4 @@
-distiller:
+multi_distiller:
   # Extractor
   extractor_mode: default
   extractor_conv_feature_layers: '[(512,10,5)] + [(512,3,2)] * 4 + [(512,2,2)] * 2'
@@ -10,7 +10,7 @@ distiller:
   conv_pos_groups: 16
 
   # Transformer encoder
-  encoder_layers: 2
+  encoder_layers: 3
   encoder_embed_dim: 768
   encoder_ffn_embed_dim: 3072
   encoder_attention_heads: 12
@@ -34,14 +34,29 @@ distiller:
   loss_type: l1
   feat_pen_loss: 0.0
   cosine_loss: 1.0  # cosine similarity loss
-  pred_layer_id: [4,8, 12]
+  pred_layer_id: [4, 8, 12]
 
   # Initialization
   init_teacher_conv_layers: true
   init_teacher_encoder_layers: true
+  initialize_from: 
+  - hubert_base
+
+  teacher_names: 
+  - hubert_base
+  - mert_v0_public
+  - ssast_frame
+  translator_type: lconv
+
+  translator_kwargs:
+    hidden_size_factor: 1.0
 
 teacher:
-  model: hubert_base
+  models:
+    - hubert_base
+    - mert_v0_public
+    - ssast_frame
+
   n_layers: 12
 
 task:

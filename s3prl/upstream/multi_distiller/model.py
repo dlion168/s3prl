@@ -24,7 +24,7 @@ class MultiDistillerConfig:
     Configuration class
     """
 
-    def __init__(self, config: dict):
+    def __init__(self, config: dict, **kwargs):
         # Feature extractor
         self.extractor_mode = str(config.get("extractor_mode", "default"))
         self.extractor_conv_feature_layers = str(
@@ -86,6 +86,19 @@ class MultiDistillerConfig:
         self.translator_kwargs = config.get('translator_kwargs')
         self.translator_type = config.get('translator_type')
         self.initialize_from = config.get('initialize_from')
+        
+        # Handle data_stats, setting defaults if not provided
+        data_stats = kwargs.get("data_stats", None)
+        if data_stats:
+            self.wav_mean = float(kwargs.get("data_stats").get("wav_mean")[0])
+            self.wav_std = float(kwargs.get("data_stats").get("wav_std")[0])
+            self.fbank_mean = float(kwargs.get("data_stats").get("fbank_mean")[0])
+            self.fbank_std = float(kwargs.get("data_stats").get("fbank_std")[0])
+        else:
+            self.wav_mean = 0
+            self.wav_std = 1
+            self.fbank_mean = 0
+            self.fbank_std = 1
 
         self.initialize_from = [['hubert_base']]
         self.fbank_mean = 0
@@ -357,6 +370,8 @@ class MultiDistillerModel(nn.Module):
                     .permute(0, 2, 1, 3)
                 )
             # B x N x T x D
+        if self.translator is not None:
+            translated_predictions = self.translator(pred, self.teacher_names) 
 
         # translated_predictions = self.translator(pred, self.teacher_names) 
 

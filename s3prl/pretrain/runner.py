@@ -18,6 +18,7 @@ import random
 import importlib
 from tqdm import tqdm
 from collections import defaultdict
+import yaml
 #-------------#
 import torch
 import torch.nn as nn
@@ -26,6 +27,95 @@ import numpy as np
 #-------------#
 from optimizers import get_optimizer, get_grouped_parameters
 from schedulers import get_scheduler
+
+import gspread
+from oauth2client.service_account import ServiceAccountCredentials
+
+#### i WILL NEED A DICTIONARY WITH THE DATASETS STATS.
+
+
+def list_sheets(json_file):
+    scope = ["https://spreadsheets.google.com/feeds", 'https://www.googleapis.com/auth/drive']
+    creds = ServiceAccountCredentials.from_json_keyfile_name(json_file, scope)
+    client = gspread.authorize(creds)
+
+    # List all spreadsheets available to the service account
+    sheet_list = client.openall()
+    print("Available Sheets:")
+    for sheet in sheet_list:
+        print(sheet.title)
+
+
+### for better management of experiments that are being run #### -> this will update an excell sheet automatically.
+def authenticate_google_sheets(json_file, sheet_name, worksheet_name):
+    scope = ["https://spreadsheets.google.com/feeds", 'https://www.googleapis.com/auth/drive']
+    creds = ServiceAccountCredentials.from_json_keyfile_name(json_file, scope)
+    client = gspread.authorize(creds)
+    sheet = client.open(sheet_name)
+    worksheet = sheet.worksheet(worksheet_name)
+    return worksheet
+
+
+def determine_cluster():
+    current_dir = os.getcwd()
+    print(f"current_dir in determine_cluster is {current_dir}")
+    if current_dir.startswith("/home/project/") or current_dir.startswith("/data/projects"):
+        return "NSCC CLUSTER"
+    elif current_dir.startswith("/export/home2"):
+        return "NTU CLUSTER"
+    else:
+        return "Unknown Cluster"
+
+    
+
+def col_to_letter(col):
+    """Convert a column index to a letter (e.g., 1 -> 'A')"""
+    result = ""
+    while col > 0:
+        col, remainder = divmod(col - 1, 26)
+        result = chr(65 + remainder) + result
+    return result
+
+def update_currently_running_experiments(args,config, sheet, epoch=None, total_epochs=None):
+    running_where = determine_cluster()
+    upstream_config = yaml.load(open(args.upstream_config, "r"), Loader=yaml.FullLoader)
+    upstream_parameters = upstream_config["multi_distiller"]
+
+
+    # Determine the status
+    if epoch is not None and total_epochs is not None:
+        status = f"{epoch}/{total_epochs}"
+    else:
+        status = "just started running"
+    
+    # Define the base starting column index ('A' -> 1)
+    base_start_col = 1
+    num_values_cols = 16  # Number of columns to fetch/update including new ones
+    
+    # Calculate the starting column for the current fold
+    start_col_index = base_start_col
+    end_col_index = start_col_index + num_values_cols - 1
+    
+    start_col = col_to_letter(start_col_index)
+    end_col = col_to_letter(end_col_index)
+    
+    col_range = f'{start_col}{args.current_row}:{end_col}{args.current_row}'
+
+    current_general_stuff = sheet.get(col_range)
+
+    if not any(current_general_stuff):
+        # If the row is empty, add the initial values
+        values_general_stuff = [[args.expdir.split("/")[-1], "DistilHub normal style", "l1 + cos", "", upstream_parameters["teacher_names"][0], upstream_parameters["initialize_from"][0], upstream_parameters["translator_type"], config['optimizer']['name'], config['optimizer']['lr']  ,running_where  ,os.getenv('USER'), status, args.sheet_row, args.expdir ,args.logfile, "" ]]
+        print(f"Adding currently running experiment details")
+        sheet.update(col_range, values_general_stuff)
+    else:
+        values_general_stuff = [[args.expdir.split("/")[-1], "DistilHub normal style", "l1 + cos", "", upstream_parameters["teacher_names"][0], upstream_parameters["initialize_from"][0], upstream_parameters["translator_type"], config['optimizer']['name'], config['optimizer']['lr']  ,running_where  ,os.getenv('USER'), status, args.sheet_row, args.expdir ,args.logfile, "" ]]
+        # Update only the status column, keep other values unchanged
+        current_general_stuff[0][11] = status  # Assuming status is the 11th column (index 10)
+        print(f"Updating status to {status}")
+        sheet.update(col_range, current_general_stuff)
+
+
 
 def get_dataset_stats(loader):
     import torchaudio
@@ -92,6 +182,8 @@ class Runner():
 
         self.init_ckpt = torch.load(self.args.init_ckpt, map_location='cpu') if self.args.init_ckpt else {}
         self.upstream = self._get_upstream()
+        self.worksheet = authenticate_google_sheets(json_file=args.json_file, sheet_name=f'SLLM_encoder_eval' ,worksheet_name='Pre-trained-models')
+        update_currently_running_experiments(self.args,self.config, self.worksheet)
 
 
     def _get_upstream(self):
@@ -160,6 +252,7 @@ class Runner():
         train_batch_size = self.config['pretrain_expert']['datarc']['train_batch_size']
         print('[Runner] - Accumulated batch size:', train_batch_size * gradient_accumulate_steps)
         dataloader = self.upstream.get_train_dataloader()
+        #devloader = self.upstream.get_dev_dataloader()
 
         print(f"self.config['pretrain_expert']['datarc']['data_stats']['wav_mean'] {self.config['pretrain_expert']['datarc']['data_stats']['wav_mean']}")
         if not self.config['pretrain_expert']['datarc']['data_stats']['wav_mean']:
@@ -329,5 +422,6 @@ class Runner():
                 
                 all_loss = 0      
                 pbar.update(1)
+            update_currently_running_experiments(self.args, self.config, self.worksheet, pbar.n , pbar.total)
 
         pbar.close()
