@@ -85,11 +85,15 @@ class SpeechCommandsDataset(SpeechCommandsBaseDataset):
         if label == self.class2index["_silence_"]:
             random_offset = randint(0, len(wav) - 16000)
             wav = wav[random_offset : random_offset + 16000]
+            return wav, label, stem
         
         if self.features_path:
             feature_path = os.path.join(self.features_path, self.upstream_name, f"{stem}.pt")
             if os.path.exists(feature_path):
-                feature = torch.load(feature_path)
+                try:
+                    feature = torch.load(feature_path)
+                except:
+                    print(feature_path, flush=True)
                 return feature, label, True
 
         return wav, label, stem

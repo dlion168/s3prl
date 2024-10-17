@@ -28,7 +28,7 @@ EFFECTS = [
 
 # Voxceleb 2 Speaker verification
 class SpeakerVerifi_train(Dataset):
-    def __init__(self, vad_config, key_list, file_path, meta_data, max_timestep=None, n_jobs=12):
+    def __init__(self, vad_config, key_list, file_path, meta_data, max_timestep=None, n_jobs=12, **kwargs):
         self.roots = file_path
         self.root_key = key_list
         self.max_timestep = max_timestep
@@ -64,6 +64,8 @@ class SpeakerVerifi_train(Dataset):
 
         self.all_speakers.sort()
         self.speaker_num = len(self.all_speakers)
+        self.upstream_name = kwargs['upstream']
+        self.features_path = kwargs['features_path']
 
     def __len__(self):
         return len(self.dataset)
@@ -82,6 +84,16 @@ class SpeakerVerifi_train(Dataset):
         tags = Path(path).parts[-3:]
         utterance_id = "-".join(tags).replace(".wav", "")
         label = self.all_speakers.index(tags[0])
+        
+        try:
+            if self.features_path and length < self.max_timestep:
+                feature_path = os.path.join(self.features_path, self.upstream_name, f"{utterance_id}.pt")
+                if os.path.exists(feature_path):
+                    feature = torch.load(feature_path)
+                    return feature, True, label
+        except:
+            print(f"{utterance_id}.pt")
+        
         return wav.numpy(), utterance_id, label
         
     def collate_fn(self, samples):
@@ -89,13 +101,15 @@ class SpeakerVerifi_train(Dataset):
 
 
 class SpeakerVerifi_test(Dataset):
-    def __init__(self, vad_config, file_path, meta_data):
+    def __init__(self, vad_config, file_path, meta_data, **kwargs):
         self.root = file_path
         self.meta_data = meta_data
         self.necessary_dict = self.processing()
         self.vad_c = vad_config 
         self.dataset = self.necessary_dict['spk_paths']
         self.pair_table = self.necessary_dict['pair_table']
+        self.upstream_name = kwargs['upstream']
+        self.features_path = kwargs['features_path']
         
     def processing(self):
         pair_table = []
@@ -127,6 +141,16 @@ class SpeakerVerifi_test(Dataset):
         wav, _ = apply_effects_file(x_path, EFFECTS)
 
         wav = wav.squeeze(0)
+        
+        try:
+            if self.features_path:
+                feature_path = os.path.join(self.features_path, self.upstream_name, f"{x_name}.pt")
+                if os.path.exists(feature_path):
+                    feature = torch.load(feature_path)
+                    return feature, True
+        except:
+            print(f"{x_name}.pt")
+        
 
         return wav.numpy(), x_name
 

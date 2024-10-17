@@ -21,7 +21,7 @@ class SingerDataset(data.Dataset):
         self.class2id = {'f1':0, 'f2':1, 'f3':2, 'f4':3, 'f5':4, 'f6':5, 'f7':6, 'f8':7, 'f9':8, 'm1':9, 'm2':10, 'm3':11, 'm4':12, 'm5':13, 'm6':14, 'm7':15, 'm8':16, 'm9':17, 'm10':18, 'm11':19}
         self.id2class = {v: k for k, v in self.class2id.items()}
         self.return_audio_path = return_audio_path
-        self.sample_rate = 16000
+        self.sample_rate = kwargs["sample_rate"]
         self.sample_duration = sample_duration * self.sample_rate if sample_duration else None
         self.upstream_name = kwargs['upstream']
         self.features_path = kwargs['features_path']
@@ -32,7 +32,7 @@ class SingerDataset(data.Dataset):
     def __getitem__(self, index):
         audio_path = self.metadata.iloc[index][0]
         
-        wav, sr = torchaudio.load(os.path.join(self.audio_dir, "audio", audio_path))
+        wav, sr = torchaudio.load(os.path.join(self.audio_dir, "audio", audio_path), backend="soundfile")
         wav = torchaudio.functional.resample(wav, orig_freq=sr, new_freq=self.sample_rate)
         audio = wav.squeeze()
 
@@ -65,3 +65,54 @@ class SingerDataset(data.Dataset):
     def collate_fn(self, samples):
         return zip(*samples)
 
+class SingerFeatureDataset(data.Dataset):
+    def __init__(self, feature_dir, metadata_dir, split, return_audio_path=True, **kwargs):
+        # self.cfg = cfg
+        self.metadata = pd.read_csv(filepath_or_buffer=os.path.join(metadata_dir, f'{split}_s.txt'), 
+                                    names = ['audio_path'])
+        self.feature_dir = feature_dir
+        self.class2id = {'f1':0, 'f2':1, 'f3':2, 'f4':3, 'f5':4, 'f6':5, 'f7':6, 'f8':7, 'f9':8, 'm1':9, 'm2':10, 'm3':11, 'm4':12, 'm5':13, 'm6':14, 'm7':15, 'm8':16, 'm9':17, 'm10':18, 'm11':19}
+        self.id2class = {v: k for k, v in self.class2id.items()}
+        self.return_audio_path = return_audio_path
+        self.upstream_name = kwargs['upstream']
+        self.features_path = kwargs['features_path']
+    
+    def label2singer(self, id_list):
+        return [self.id2class[id] for id in id_list]
+    
+    def __getitem__(self, index):
+        audio_path = self.metadata.iloc[index][0]
+        
+        feature = torch.load(os.path.join(self.feature_dir, "audio", audio_path.replace(".wav", ".pt")), map_location="cpu")
+        if len(feature[0].shape) == 1:
+            feature = [f.unsqueeze(0).unsqueeze(0) for f in feature]
+        elif len(feature[0].shape) == 2:
+            feature = [f.unsqueeze(0) for f in feature]
+        
+        label = self.class2id[audio_path.split('/')[1].split('_')[0]]
+
+        if self.return_audio_path:
+            return feature, label, audio_path.replace('/', '-')
+        return feature, label
+
+    def __len__(self):
+        return len(self.metadata)
+    
+    def collate_fn(self, samples):
+        zipped = list(zip(*samples))
+        
+        batch_size = len(zipped[0])
+        num_layers = len(zipped[0][0])
+        
+        # Initialize a list to hold the final output for each layer
+        output_list = []
+        for layer_idx in range(num_layers):
+            # Collect all batch elements for the current layer
+            layer_tensors = [zipped[0][batch_idx][layer_idx].squeeze(0) for batch_idx in range(batch_size)]
+            # Stack tensors from all batches along the 0th dimension to form [batch, 1, hidden]
+            stacked_tensor = torch.stack(layer_tensors, dim=0)
+            output_list.append(stacked_tensor)
+        
+        zipped[0] = output_list
+        
+        return zipped

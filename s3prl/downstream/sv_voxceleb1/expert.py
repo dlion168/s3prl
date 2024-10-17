@@ -64,20 +64,26 @@ class DownstreamExpert(nn.Module):
             "key_list": ["Voxceleb1"],
             "meta_data": self.datarc['train_meta_data'],
             "max_timestep": self.datarc["max_timestep"],
+            "upstream": kwargs['upstream'],
+            "features_path": kwargs['features_path'],
         }
         self.train_dataset = SpeakerVerifi_train(**train_config)
 
         dev_config = {
             "vad_config": self.datarc['vad_config'],
             "file_path": train_file_path, 
-            "meta_data": self.datarc['dev_meta_data']
+            "meta_data": self.datarc['dev_meta_data'],
+            "upstream": kwargs['upstream'],
+            "features_path": kwargs['features_path'],
         }        
         self.dev_dataset = SpeakerVerifi_test(**dev_config)
 
         test_config = {
             "vad_config": self.datarc['vad_config'],
             "file_path": test_file_path, 
-            "meta_data": self.datarc['test_meta_data']
+            "meta_data": self.datarc['test_meta_data'],
+            "upstream": kwargs['upstream'],
+            "features_path": kwargs['features_path'],
         }
         self.test_dataset = SpeakerVerifi_test(**test_config)
 

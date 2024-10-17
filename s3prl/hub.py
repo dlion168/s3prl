@@ -37,6 +37,13 @@ from s3prl.upstream.wav2vec2.hubconf import *
 from s3prl.upstream.wav2vec.hubconf import *
 from s3prl.upstream.wavlm.hubconf import *
 from s3prl.upstream.hf_whisper.hubconf import *
+from s3prl.upstream.llm_codec.hubconf import *
+from s3prl.upstream.blsp.hubconf import *
+from s3prl.upstream.blsp_emo.hubconf import *
+from s3prl.upstream.llasm.hubconf import *
+from s3prl.upstream.salmonn.hubconf import *
+from s3prl.upstream.qwen_audio.hubconf import *
+from s3prl.upstream.hf_mert.hubconf import *
 # from s3prl.upstream.mullama.hubconf import *
 
 

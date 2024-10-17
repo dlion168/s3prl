@@ -10,17 +10,36 @@ from ..interfaces import UpstreamBase
 import joblib
 import fairseq
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
+from transformers import LlamaConfig
 
 import numpy as np
 
-class FeatureReader(object):
+class LlamaEmbeddings(torch.nn.Module):
+    def __init__(self):
+        super(LlamaEmbeddings, self).__init__()
+        # Load the configuration
+        config = LlamaConfig.from_pretrained("fnlp/SpeechGPT-7B-cm")
+        # Initialize the embedding layer with the same dimensions as the original model
+        self.embed_tokens = torch.nn.Embedding(config.vocab_size, config.hidden_size)
+        
+        # Load the pretrained weights only for the embedding layer
+        state_dict = torch.load('./upstream/speechgpt/embed_speechgpt.pt', map_location='cpu')
+
+        self.embed_tokens.weight.data.copy_(state_dict['weight'])
+    
+    def forward(self, input_ids):
+        return self.embed_tokens(input_ids)
+
+class FeatureReader(nn.Module):
     def __init__(self, ckpt_path, layer=11, max_chunk=1600000, fp16=False, sampling_rate=16000):
-        (
+        ( 
             model,
             cfg,
             task,
         ) = fairseq.checkpoint_utils.load_model_ensemble_and_task([ckpt_path])
+        super(FeatureReader, self).__init__()
         self.model = model[0].eval()
         self.task = task
         self.layer = layer
@@ -72,50 +91,45 @@ class ApplyKmeans(object):
             self.Cnorm = self.Cnorm.cuda()
 
     def __call__(self, x):
-        if isinstance(x, torch.Tensor):
-            self.C = self.C.to(x)
-            self.Cnorm = self.Cnorm.to(x)
-            dist = (
-                x.pow(2).sum(1, keepdim=True)
-                - 2 * torch.matmul(x, self.C)
-                + self.Cnorm
-            )
-            min_list = dist.argmin(dim=1).cpu().numpy()
-            min_tensor = torch.tensor(min_list)
-            feat = self.C[min_tensor]
-            return min_list, feat
-        else:
-            dist = (
-                (x ** 2).sum(1, keepdims=True)
-                - 2 * np.matmul(x, self.C_np)
-                + self.Cnorm_np
-            )
-            return np.argmin(dist, axis=1)
+        self.C = self.C.to(x)
+        self.Cnorm = self.Cnorm.to(x)
+        dist = (
+            x.pow(2).sum(1, keepdim=True)
+            - 2 * torch.matmul(x, self.C)
+            + self.Cnorm
+        )
+        min_list = dist.argmin(dim=1).cpu().numpy()
+        min_tensor = torch.tensor(min_list)
+        feat = self.C.transpose(0,1)[min_tensor]
+        return min_list, feat
 
 class UpstreamExpert(UpstreamBase):
     """
     The SpeechGPT wrapper
     """
 
-    def __init__(self, encoder_ckpt, km_ckpt, options_config=None, **kwargs):
+    def __init__(self, encoder_ckpt, km_ckpt, feat_mode = "encoder", options_config=None, **kwargs):
         super().__init__(**kwargs)
 
         self.feature_reader = FeatureReader(encoder_ckpt)
         self.apply_kmeans = ApplyKmeans(km_ckpt)
+        self.feat_mode = feat_mode
+        self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+        self.embedding_table = LlamaEmbeddings()
     
     @staticmethod
     def merge_duplicates(cluster_ids):
         dup_cluster_list = []
-        duration_list = []
+        id_list = []
         count = 1
         for i in range(0, len(cluster_ids)):
             if i + 1 < len(cluster_ids) and cluster_ids[i] == cluster_ids[i+1]:
                 count += 1
             else:
                 dup_cluster_list.append(cluster_ids[i])
-                duration_list.append(count)
+                id_list.append(i)
                 count = 1
-        return dup_cluster_list, duration_list
+        return dup_cluster_list, id_list
 
     def get_downsample_rates(self, key: str) -> int:
         return 160
@@ -124,10 +138,18 @@ class UpstreamExpert(UpstreamBase):
         hidden = []
         for wav in wavs:
             feat = self.feature_reader.get_feats(wav)
-            cluster_ids, cluster_feature = self.apply_kmeans(feat).tolist()
-            dup_cluster_list, _ = self.merge_duplicates(cluster_ids)
-            hid = torch.index_select(cluster_feature, 0, dup_cluster_list)
-            hidden.append(hid)
+            if self.feat_mode == "encoder":
+                hidden.append(feat)
+            else:
+                cluster_ids, cluster_feature = self.apply_kmeans(feat)
+                dup_cluster_list, id_list = self.merge_duplicates(cluster_ids)
+                if self.feat_mode == "kmeans_centroid":
+                    hid = cluster_feature.index_select(0, torch.IntTensor(id_list).to(self.device))
+                    hidden.append(hid)
+                else :
+                    lm_embeds = self.embedding_table(torch.IntTensor(id_list).to(self.device))
+                    hidden.append(lm_embeds)
+                    
         max_length = max(tensor.size(0) for tensor in hidden)
         # Pad each tensor to the maximum length
         padded_tensors = []

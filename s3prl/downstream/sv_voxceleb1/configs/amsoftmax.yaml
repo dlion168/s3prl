@@ -1,7 +1,7 @@
 runner:
   total_steps: 200000
   gradient_clipping: 1.0e+3
-  gradient_accumulate_steps: 5
+  gradient_accumulate_steps: 1
 
   log_step: 500
   eval_step: 10000
@@ -26,13 +26,13 @@ downstream_expert:
     vad_config:
       min_sec: 32000
     
-    file_path: /groups/public/VoxCeleb1
+    file_path: ../../../../livingrooms/public/superb/VoxCeleb1
     train_meta_data: ./downstream/sv_voxceleb1/dev_meta_data/dev_speaker_ids.txt
     dev_meta_data: ./downstream/sv_voxceleb1/dev_meta_data/dev_meta_data.txt
     test_meta_data: ./downstream/sv_voxceleb1/voxceleb1_test_v2.txt
 
     max_timestep: 128000
-    train_batch_size: 10
+    train_batch_size: 50
     eval_batch_size: 1
     num_workers: 8 
 

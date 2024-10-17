@@ -13,6 +13,7 @@ import logging
 import torch
 
 from .audio import FeatureExtractor
+from ..interfaces import UpstreamBase
 
 logger = logging.getLogger(__name__)
 
@@ -20,7 +21,7 @@ FBANK_SAMPLE_STRIDE = 160
 SAMPLE_RATE = 16000
 
 
-class UpstreamExpert(torch.nn.Module):
+class UpstreamExpert(UpstreamBase):
     def __init__(
         self,
         ckpt: str,
