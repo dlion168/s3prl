@@ -23,7 +23,7 @@ class MultiDistillerConfig:
     Configuration class
     """
 
-    def __init__(self, config: dict):
+    def __init__(self, config: dict, **kwargs):
         # Feature extractor
         self.extractor_mode = str(config.get("extractor_mode", "default"))
         self.extractor_conv_feature_layers = str(
@@ -85,6 +85,19 @@ class MultiDistillerConfig:
         self.translator_kwargs = config.get('translator_kwargs')
         self.translator_type = config.get('translator_type')
         self.initialize_from = config.get('initialize_from')
+        
+        # Handle data_stats, setting defaults if not provided
+        data_stats = kwargs.get("data_stats", None)
+        if data_stats:
+            self.wav_mean = float(kwargs.get("data_stats").get("wav_mean")[0])
+            self.wav_std = float(kwargs.get("data_stats").get("wav_std")[0])
+            self.fbank_mean = float(kwargs.get("data_stats").get("fbank_mean")[0])
+            self.fbank_std = float(kwargs.get("data_stats").get("fbank_std")[0])
+        else:
+            self.wav_mean = 0
+            self.wav_std = 1
+            self.fbank_mean = 0
+            self.fbank_std = 1
 
 class MultiDistillerModel(nn.Module):
     """
@@ -176,16 +189,18 @@ class MultiDistillerModel(nn.Module):
         self.teacher_names = config.teacher_names
         self.target_feature_sizes = {t: get_model_feature_size(t) for t in self.teacher_names}
         self.backbone_feature_size = [12, 2, 176, 768]
-        # self.feature_translators = nn.ModuleDict({
-        #     'hubert_base': FeatureTranslator(feat_emb_dim, config.hubert_hidden_size),
-        #     'mert_v0_public': FeatureTranslator(feat_emb_dim, config.mert_hidden_size),
-        #     'ast': FeatureTranslator(feat_emb_dim, config.ast_hidden_size)
-        # })
-        #if self.target_feature_sizes:
-            #translator_kwargs = {} if config.translator_kwargs is None else config.translator_kwargs
-            #translator_kwargs["input_size"] = self.backbone_feature_size
-            #translator_kwargs["target_model_names"] = self.teacher_names
-            #self.translator = build_feature_translator(config.translator_type, **translator_kwargs)
+
+        if config.translator_type != "avgpool":
+            if self.target_feature_sizes:
+                translator_kwargs = {} if config.translator_kwargs is None else config.translator_kwargs
+                translator_kwargs["input_size"] = self.backbone_feature_size
+                translator_kwargs["target_model_names"] = self.teacher_names
+                self.translator = build_feature_translator(config.translator_type, **translator_kwargs)
+            # if True:
+            #     self.translator = None
+        else:
+            self.translator = None
+
 
     def forward_feature(self, wave, pad_mask):
         """Forward feature extractor"""
@@ -285,17 +300,18 @@ class MultiDistillerModel(nn.Module):
                 .permute(0, 2, 1, 3)
             )
             # B x N x T x D
+        if self.translator is not None:
+            translated_predictions = self.translator(pred, self.teacher_names) 
 
-        #translated_predictions = self.translator(pred, self.teacher_names) 
-
-        # if get_hidden:
-        #     return feat, feat_final, translated_predictions, pad_mask, layer_hiddens
-        # else:
-        #     return feat, feat_final, translated_predictions, pad_mask
-        if get_hidden:
-            return feat, feat_final, pred, pad_mask, layer_hiddens
+            if get_hidden:
+                return feat, feat_final, translated_predictions, pad_mask, layer_hiddens
+            else:
+                return feat, feat_final, translated_predictions, pad_mask
         else:
-            return feat, feat_final, pred, pad_mask
+            if get_hidden:
+                return feat, feat_final, pred, pad_mask, layer_hiddens
+            else:
+                return feat, feat_final, pred, pad_mask
 
     def cal_pad_mask(self, pad_mask, max_len):
         """Calculates pad mask after conv."""

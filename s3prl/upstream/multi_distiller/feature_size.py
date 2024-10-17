@@ -4,6 +4,9 @@ MODEL_FEATURE_SIZES = {
     "ast": (12, 1214, 768),
     "atst_base": (12, 1214, 768),
     "whisper_large": (1024, 16, 16),
+    "ssast-patch": (12, 1214, 768),
+    "ssast-frame": (12, 1214, 768),
+    "ssast-frame-local": (12, 1214, 768),
 }
 
 
