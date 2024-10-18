@@ -14,7 +14,10 @@ def init_model(model, name, trainable, interfaces=None):
 
 def get_upstream(args):
     Upstream = getattr(hub, args.upstream)
-    model = Upstream()
+    if args.local_path:
+        model = Upstream(args.local_path)
+    else:
+        model = Upstream()
     return init_model(
         model = model,
         name = 'Upstream',
@@ -148,6 +151,7 @@ def main():
     parser.add_argument("-u", "--upstream", type=str, help="Upstream model to extract feature from", default="")
     parser.add_argument("-o", "--output_dir", type=str, help="Output directory of features")
     parser.add_argument("-t", "--target_sr", type=int, help="Target sample rate of audio encoder model", default=16000)
+    parser.add_argument("-l", "--local_path", type=str, help="Local path to upstream model", default=None)
 
     args = parser.parse_args()
 

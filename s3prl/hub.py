@@ -44,6 +44,7 @@ from s3prl.upstream.blsp_emo.hubconf import *
 #from s3prl.upstream.salmonn.hubconf import *
 #from s3prl.upstream.qwen_audio.hubconf import *
 from s3prl.upstream.hf_mert.hubconf import *
+from s3prl.upstream.multi_distiller.hubconf import *
 # from s3prl.upstream.mullama.hubconf import *
 
 
