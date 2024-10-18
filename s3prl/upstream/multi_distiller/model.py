@@ -88,6 +88,7 @@ class MultiDistillerConfig:
         self.initialize_from = config.get('initialize_from')
         
         # Handle data_stats, setting defaults if not provided
+        
         data_stats = kwargs.get("data_stats", None)
         if data_stats:
             self.wav_mean = float(kwargs.get("data_stats").get("wav_mean")[0])
@@ -100,9 +101,6 @@ class MultiDistillerConfig:
             self.fbank_mean = 0
             self.fbank_std = 1
 
-        self.initialize_from = [['hubert_base']]
-        self.fbank_mean = 0
-        self.fbank_std = 0
 
 class MultiDistillerModel(nn.Module):
     """
@@ -225,29 +223,43 @@ class MultiDistillerModel(nn.Module):
             #         )
             #     ) for teacher in self.teacher_names  # For each teacher model
             # })
-            self.output_layers = nn.ModuleDict({
-                teacher: nn.Sequential(
-                    nn.Linear(final_emb_size, inter_dim * self.n_tasks // 2),  # Linear projection for each teacher
-                    nn.GELU(),  # Non-linear activation
-                    # Conditionally add a more complex model for 'sasst_frame' teacher
-                    nn.LayerNorm(inter_dim * self.n_tasks // 2),  # Normalization for stability
-                    Rearrange('b t d -> b d t'),  # Rearrange for Conv1d
-                    nn.Conv1d(inter_dim * self.n_tasks // 2, inter_dim * self.n_tasks // 2, kernel_size=3, padding=1),
-                    nn.ReLU(),
-                    Rearrange('b d t -> b t d'),
-                    nn.Linear(inter_dim * self.n_tasks // 2, inter_dim * self.n_tasks),
-                    nn.LayerNorm(inter_dim * self.n_tasks),
-                    nn.GELU(),
-                    SplitLinear(inter_dim, self.n_tasks, config.final_dim)
+
+            #### this needs to be improved:
+
+            #### 
+            if len(config.teacher_names) == 1:
+                self.output_layer = nn.Sequential(
+                nn.Linear(final_emb_size, inter_dim * self.n_tasks),
+                nn.GELU(),
+                SplitLinear(inter_dim, self.n_tasks, config.final_dim),
                 )
+                self.translator = None
+            else: 
+                self.output_layers = nn.ModuleDict({
+                    teacher: nn.Sequential(
+                        nn.Linear(final_emb_size, inter_dim * self.n_tasks // 2),  # Linear projection for each teacher
+                        nn.GELU(),  # Non-linear activation
+                        # Conditionally add a more complex model for 'sasst_frame' teacher
+                        nn.LayerNorm(inter_dim * self.n_tasks // 2),  # Normalization for stability
+                        Rearrange('b t d -> b d t'),  # Rearrange for Conv1d
+                        nn.Conv1d(inter_dim * self.n_tasks // 2, inter_dim * self.n_tasks // 2, kernel_size=3, padding=1),
+                        nn.ReLU(),
+                        Rearrange('b d t -> b t d'),
+                        nn.Linear(inter_dim * self.n_tasks // 2, inter_dim * self.n_tasks),
+                        nn.LayerNorm(inter_dim * self.n_tasks),
+                        nn.GELU(),
+                        SplitLinear(inter_dim, self.n_tasks, config.final_dim)
+                    )
                 # ) if teacher == 'ssast_frame' else nn.Sequential(
                 #     nn.Linear(final_emb_size, inter_dim * self.n_tasks),  # Simpler model for other teachers
                 #     nn.GELU(),
                 #     SplitLinear(inter_dim, self.n_tasks, config.final_dim)
                 # )
-            for teacher in self.teacher_names  # For each teacher model
-            })
-            print(self.output_layers)
+            
+                for teacher in self.teacher_names  # For each teacher model
+                })
+                
+                print(self.output_layers)
             
         elif config.out_layer_type in {"none", "self-hidden"}:
             self.output_layer = None
@@ -353,27 +365,33 @@ class MultiDistillerModel(nn.Module):
             if self.task_emb_type == "self-hidden":
                 pred = torch.stack([feat_final] + layer_hiddens, dim=1)
             else:
-                pred = {}
-                for teacher in self.teacher_names:
-                    pred[teacher] = self.output_layers[teacher](hidden).reshape(b_sz, t_sz, -1)
+                if len(self.config.teacher_names) ==1:
+                    pred = self.output_layer(hidden).reshape(b_sz, n_sz, t_sz, -1)
+                else:
+                    pred = {}
+                    for teacher in self.teacher_names:
+                        pred[teacher] = self.output_layers[teacher](hidden).reshape(b_sz, t_sz, -1)
             # B x N x T x D
         else:
             pred = None
 
         if (not no_pred) and self.task_emb_type == "expand-last":
             assert n_sz == 1, n_sz
-            for teacher in self.teacher_names:
-                pred[teacher] = (
-                    pred[teacher]
-                    .squeeze(1)
-                    .reshape(b_sz, t_sz, self.n_tasks, -1)
-                    .permute(0, 2, 1, 3)
+            if len(self.config.teacher_names) ==1:
+                pred = (
+                pred.squeeze(1)
+                .reshape(b_sz, t_sz, self.n_tasks, -1)
+                .permute(0, 2, 1, 3)
                 )
+            else:
+                for teacher in self.teacher_names:
+                    pred[teacher] = (
+                        pred[teacher]
+                        .squeeze(1)
+                        .reshape(b_sz, t_sz, self.n_tasks, -1)
+                        .permute(0, 2, 1, 3)
+                    )
             # B x N x T x D
-        if self.translator is not None:
-            translated_predictions = self.translator(pred, self.teacher_names) 
-
-        # translated_predictions = self.translator(pred, self.teacher_names) 
 
         if get_hidden:
             return feat, feat_final, pred, pad_mask, layer_hiddens
