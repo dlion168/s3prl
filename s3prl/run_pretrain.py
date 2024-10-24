@@ -39,6 +39,10 @@ def get_pretrain_args():
     parser.add_argument('-o', '--override', help='Used to override args and config, this is at the highest priority')
 
     # configuration for the experiment, including runner and downstream
+    parser.add_argument('--backend', default='nccl', help='The backend for distributed training')
+    parser.add_argument('--local_rank', type=int,
+                        help=f'The GPU id this process should use while distributed training. \
+                               None when not launched by torch.distributed.launch')
     parser.add_argument('-c', '--config', metavar='CONFIG_PATH', help='The yaml file for configuring the whole experiment, except the upstream model')
 
     # upstream settings
@@ -61,6 +65,7 @@ def get_pretrain_args():
     parser.add_argument('--multi_gpu', action='store_true', help='Enables multi-GPU training')
 
     args = parser.parse_args()
+
 
     if args.expdir is None:
         args.expdir = f'result/pretrain/{args.expname}'
@@ -86,17 +91,32 @@ def get_pretrain_args():
         # load checkpoint
         ckpt = torch.load(ckpt_pth, map_location='cpu')
 
-        def update_args(old, new):
-            old_dict = vars(old)
+        def update_args(old, new, preserve_list=None):
+            out_dict = vars(old)
             new_dict = vars(new)
-            old_dict.update(new_dict)
-            return Namespace(**old_dict)
 
+            
+            for key in list(new_dict.keys()):
+                if key in preserve_list:
+                    new_dict.pop(key)
+            out_dict.update(new_dict)
+            return Namespace(**out_dict)
+        
+        # overwrite args
+        cannot_overwrite_args = [
+            'mode', 'evaluate_split', 'override',
+            'backend', 'local_rank', 'past_exp',
+        ]
+
+        args = update_args(args, ckpt['Args'], preserve_list=cannot_overwrite_args)
+        
         # overwrite args and config
-        args = update_args(args, ckpt['Args'])
         os.makedirs(args.expdir, exist_ok=True)
         args.init_ckpt = ckpt_pth
-        #config = ckpt['Config'] # fix because the multidistiller saved it wrongly..
+        
+        #config = ckpt['Config'] # fix because the multidistiller saved it wrongly..! why is this saved like this? it seems there was a mistake in the John code...
+        
+        
         upstream_dirs = [u for u in os.listdir('pretrain/') if re.search(f'^{u}_|^{u}$', args.upstream)]
         assert len(upstream_dirs) == 1
         print(f"RUNNING NORMAL LOAD OF CONFIG FILE IN past_exp PART BECAUSE THE MULTIDISTILLER DID NOT SAVED CONFIG STUFF PROPERLY")
@@ -105,10 +125,10 @@ def get_pretrain_args():
             args.config = f'pretrain/{upstream_dirs[0]}/config_runner.yaml'
         with open(args.config, 'r') as file:
             config = yaml.load(file, Loader=yaml.FullLoader)
-        if os.path.isfile(args.config):
-            copyfile(args.config, f'{args.expdir}/config_runner.yaml')
-        else:
-            raise FileNotFoundError('Wrong file path for runner config.')
+
+
+
+        print(f"the updated config file is {config}")
 
     else:
         print('[Runner] - Start a new experiment')
