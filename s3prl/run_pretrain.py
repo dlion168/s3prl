@@ -58,6 +58,7 @@ def get_pretrain_args():
     parser.add_argument('--json_file', type=str,default="/export/home2/fabian/projects/dataset_distillation/robust-superb/s3prl/results-for-dd-research-f18106ee2c51.json")#i can reuse my same json file.
     parser.add_argument('--sheet_row', type=int, default=1,help='the row number on where this pre-trained model experiment will be in the downstream experiment results.  set to 1 for now.')
     parser.add_argument('--current_row', type=int, default=2,help='pretrain-excel sheet row for model that is currently runing.')
+    parser.add_argument('--find_best_checkpoint', action='store_true', help="to iterate folder and fend the best train loss checkpoint... (Fabian)")
 
     # options
     parser.add_argument('--seed', default=1337, type=int)

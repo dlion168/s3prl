@@ -32,7 +32,7 @@ import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 
 #### i WILL NEED A DICTIONARY WITH THE DATASETS STATS.
-
+# I need this function to recover best train loss of some checkpoints I didnt analize.
 
 def list_sheets(json_file):
     scope = ["https://spreadsheets.google.com/feeds", 'https://www.googleapis.com/auth/drive']
@@ -306,6 +306,16 @@ class Runner():
         records = defaultdict(list)
         prefix = f'{self.args.upstream}/train-'
 
+        # Initialize variable to track the lowest loss
+        best_train_loss = float('inf')
+        epoch_train_loss = 0
+
+        if self.args.find_best_checkpoint:
+            print("[Runner] - Finding best checkpoint...")
+            self.find_best_checkpoint(dataloader, self.args, amp = amp)
+            return
+
+
         while pbar.n < pbar.total:
             for data in tqdm(dataloader, dynamic_ncols=True, desc='train'):
                 # try/except block for forward/backward
@@ -342,6 +352,7 @@ class Runner():
 
                 # record loss
                 all_loss += loss.item()
+                epoch_train_loss += loss.item()
                 del loss
                 
                 # whether to accumulate gradient
@@ -372,6 +383,8 @@ class Runner():
                 if scheduler:
                     scheduler.step()
 
+                # Record the loss for this batch
+                epoch_train_loss += loss.item()
                 # logging
                 if global_step % self.config['runner']['log_step'] == 0 or pbar.n == pbar.total -1:
                     # log loss
@@ -392,6 +405,28 @@ class Runner():
                         global_step=global_step,
                     )
                     records = defaultdict(list)
+                    # Saving model with the lowest loss
+                    avg_epoch_loss = epoch_train_loss / len(dataloader)
+                    if avg_epoch_loss < best_train_loss:
+                        best_train_loss = avg_epoch_loss  # Update best training loss
+                        tqdm.write(f"[Runner] - New best training loss: {best_train_loss:.6f}, saving checkpoint...")
+                        
+                        all_states = {
+                            'Optimizer': optimizer.state_dict(),
+                            'Step': pbar.n,
+                            'Args': self.args,
+                            'Config': self.config,
+                        }
+                        all_states = self.upstream.add_state_to_save(all_states)
+
+                        if scheduler:
+                            all_states['Scheduler'] = scheduler.state_dict()
+
+                        save_name = f'best-train-loss.ckpt'
+                        save_path = os.path.join(self.args.expdir, save_name)
+                        torch.save(all_states, save_path)
+                        tqdm.write(f'[Runner] - Checkpoint saved to: {save_path}')
+
 
                 if global_step % self.config['runner']['save_step'] == 0 or pbar.n == pbar.total -1:
                     def check_ckpt_num(directory):

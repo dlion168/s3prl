@@ -25,6 +25,10 @@ from s3prl.schedulers import get_scheduler
 from s3prl.upstream.interfaces import Featurizer
 from s3prl.utility.helper import is_leader_process, get_model_state, show, defaultdict
 
+import gspread
+from oauth2client.service_account import ServiceAccountCredentials
+import pdb
+
 from huggingface_hub import HfApi, HfFolder, Repository
 
 SAMPLE_RATE = 16000
@@ -76,6 +80,7 @@ import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 
 
+
 def list_sheets(json_file):
     scope = ["https://spreadsheets.google.com/feeds", 'https://www.googleapis.com/auth/drive']
     creds = ServiceAccountCredentials.from_json_keyfile_name(json_file, scope)
@@ -97,43 +102,25 @@ def authenticate_google_sheets(json_file, sheet_name, worksheet_name):
     worksheet = sheet.worksheet(worksheet_name)
     return worksheet
 
-
-def determine_cluster():
-    current_dir = os.getcwd()
-    print(f"current_dir in determine_cluster is {current_dir}")
-    if current_dir.startswith("/home/project/") or current_dir.startswith("/data/projects"):
-        return "NSCC CLUSTER"
-    elif current_dir.startswith("/export/home2"):
-        return "NTU CLUSTER"
-    else:
-        return "Unknown Cluster"
-
-    
-
-def col_to_letter(col):
-    """Convert a column index to a letter (e.g., 1 -> 'A')"""
-    result = ""
-    while col > 0:
-        col, remainder = divmod(col - 1, 26)
-        result = chr(65 + remainder) + result
-    return result
-
-def update_currently_running_experiments(args,config, sheet, epoch=None, total_epochs=None):
-    running_where = determine_cluster()
-    upstream_config = yaml.load(open(args.upstream_config, "r"), Loader=yaml.FullLoader)
-    upstream_parameters = upstream_config["multi_distiller"]
+# Helper function to convert column number to letter
+def col_to_letter(col_num):
+    string = ""
+    while col_num > 0:
+        col_num, remainder = divmod(col_num - 1, 26)
+        string = chr(65 + remainder) + string
+    return string
 
 
-    # Determine the status
-    if epoch is not None and total_epochs is not None:
-        status = f"{epoch}/{total_epochs}"
-    else:
-        status = "just started running"
-    
+def update_currently_running_experiments(args, sheet, acc=None):
+
     # Define the base starting column index ('A' -> 1)
     base_start_col = 1
-    num_values_cols = 16  # Number of columns to fetch/update including new ones
+    num_values_cols = 25  # Number of columns to fetch/update including new ones
     
+    task_to_column = { 'asr': 4, 'pr': 5, 'sf-cer': 6, 'asv': 7, 'sd': 8, 'ks': 9, 'ic': 10, 'sf-f1': 11, 'sid': 12, 'er': 13, 'vocalset_singer_id': 14, 'vocalid': 15, 'instrument_nsynth': 16, 'pitchid-nsy': 17, 'mer-mtg-roc': 18,
+                        'mer-mtg pr': 19, 'genre-mtg roc': 20, 'genre-mtg pr': 21, 'inst-mtg roc': 22,
+                        'inst-mtg pr': 23, 'mt-mtg roc': 24, 'mt-mtg pr': 25 }
+
     # Calculate the starting column for the current fold
     start_col_index = base_start_col
     end_col_index = start_col_index + num_values_cols - 1
@@ -143,19 +130,30 @@ def update_currently_running_experiments(args,config, sheet, epoch=None, total_e
     
     col_range = f'{start_col}{args.current_row}:{end_col}{args.current_row}'
 
+    # Fetch the current row's data
     current_general_stuff = sheet.get(col_range)
 
+    # If the row is empty, initialize it with model details and accuracy
     if not any(current_general_stuff):
-        # If the row is empty, add the initial values
-        values_general_stuff = [[args.expdir.split("/")[-1], "DistilHub normal style", "l1 + cos", "", upstream_parameters["teacher_names"][0], upstream_parameters["initialize_from"][0], upstream_parameters["translator_type"], config['optimizer']['name'], config['optimizer']['lr']  ,running_where  ,os.getenv('USER'), status, args.sheet_row, args.expdir ,args.logfile, "" ]]
-        print(f"Adding currently running experiment details")
+        # Fill in basic information
+        values_general_stuff = [[args.upstream_ckpt.split("/")[-2], args.upstream_feature_selection, ""] + [''] * (num_values_cols - 3)]  # Replace with dynamic information
+        
+        # Update the relevant downstream task performance (based on the task_to_column dict)
+        task_col = task_to_column.get(args.downstream)
+        if task_col is not None:
+            values_general_stuff[0][task_col - 1] = acc  # Filling the accuracy or performance value
+
+        print(f"Adding currently running experiment details for task: {args.downstream}")
         sheet.update(col_range, values_general_stuff)
+    
     else:
-        values_general_stuff = [[args.expdir.split("/")[-1], "DistilHub normal style", "l1 + cos", "", upstream_parameters["teacher_names"][0], upstream_parameters["initialize_from"][0], upstream_parameters["translator_type"], config['optimizer']['name'], config['optimizer']['lr']  ,running_where  ,os.getenv('USER'), status, args.sheet_row, args.expdir ,args.logfile, "" ]]
-        # Update only the status column, keep other values unchanged
-        current_general_stuff[0][11] = status  # Assuming status is the 11th column (index 10)
-        print(f"Updating status to {status}")
-        sheet.update(col_range, current_general_stuff)
+        # Row exists; update only the downstream task column
+        task_col = task_to_column.get(args.downstream)
+        if task_col is not None:
+            current_general_stuff[0][task_col - 1] = acc  # Assuming `acc` is the new performance value to be updated
+
+            print(f"Updating task {args.downstream} performance to {acc}")
+            sheet.update(col_range, current_general_stuff)
 
 
 
@@ -175,14 +173,18 @@ class Runner():
     eg. training loop, evaluation loop, upstream propagation, optimization, logging, checkpoint saving
     """
     def __init__(self, args, config):
+        torchaudio.set_audio_backend('soundfile')
         self.args = args
         self.config = config
         self.init_ckpt = torch.load(self.args.init_ckpt, map_location='cpu') if self.args.init_ckpt else {}
-
         self.upstream = self._get_upstream()
         self.featurizer = self._get_featurizer()
         self.downstream = self._get_downstream()
         self.all_entries = [self.upstream, self.featurizer, self.downstream]
+        self.args.update_results = True # hacking this on the meantime because is not working well....
+        if self.args.update_results:
+            print(f"[runner.py] authenticating google sheet.")
+            self.worksheet = authenticate_google_sheets(json_file=args.json_file, sheet_name=f'SLLM_encoder_eval' ,worksheet_name='dowstream-performance-distilled-models')
 
 
     def _load_weight(self, model, name):
@@ -313,6 +315,8 @@ class Runner():
         model_card = MODEL_CARD_MARKDOWN.format(upstream_model=self.args.upstream)
         with open(os.path.join(path, "README.md"), "w") as f:
             f.write(model_card)
+    
+
 
 
     def train(self):
@@ -363,6 +367,15 @@ class Runner():
         records = defaultdict(list)
         epoch = self.init_ckpt.get('Epoch', 0)
         train_split = self.config['runner'].get("train_dataloader", "train")
+
+        if self.args.find_best_checkpoint:
+            dataloader = self.downstream.model.get_dataloader(train_split)
+            print("[Runner] - Finding best checkpoint...")
+            self._find_best_checkpoint(dataloader, self.upstream, self.args, amp = amp)
+            return
+
+        
+    
         while pbar.n < pbar.total:
             try:
                 dataloader = self.downstream.model.get_dataloader(train_split, epoch=epoch)
@@ -373,7 +386,7 @@ class Runner():
                         dataloader.sampler.set_epoch(epoch)
                 else:
                     raise
-
+            
             for batch_id, (wavs, *others) in enumerate(tqdm(dataloader, dynamic_ncols=True, desc='train', file=tqdm_file)):
                 # try/except block for forward/backward
                 try:
@@ -571,6 +584,13 @@ class Runner():
                 )
                 batch_ids.append(batch_id)
 
+
+        acc = torch.FloatTensor(records["acc"]).mean().item() *100
+        if self.args.update_results:
+            print(f"updating results!.")
+            update_currently_running_experiments(self.args, self.worksheet, acc=acc)
+
+
         save_names = self.downstream.model.log_records(
             split,
             records = records,
@@ -594,6 +614,8 @@ class Runner():
         if not_during_training:
             logger.close()
             shutil.rmtree(tempdir)
+            
+            
 
         return [] if type(save_names) is not list else save_names
 
