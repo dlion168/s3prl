@@ -162,7 +162,9 @@ def get_dataset_stats(loader):
 
     mean_value_fbank = np.mean(mean)
     std_value_fbank = np.mean(std)
-    print(f"Final dataset mean: {mean_value_fbank}, Final dataset std: {std_value_fbank}")
+    print(f"Final dataset mean_value_fbank: {mean_value_fbank}, Final dataset std_value_fbank: {std_value_fbank}")
+    print(f"Final dataset wav_mean: {wav_mean}, Final dataset wav_std: {wav_std}")
+
 
     return wav_mean, wav_std, mean_value_fbank, std_value_fbank
 
@@ -261,10 +263,6 @@ class Runner():
             self.config['pretrain_expert']['datarc']['data_stats']['wav_std'] = wav_std.cpu().item()
             self.config['pretrain_expert']['datarc']['data_stats']['fbank_mean'] = mean_value_fbank
             self.config['pretrain_expert']['datarc']['data_stats']['fbank_std'] = std_value_fbank
-
-        
-        
-
 
 
         # set epoch
