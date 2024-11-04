@@ -528,8 +528,8 @@ class MultiDistillerForPretrain(nn.Module):
                 ssast_state_dict = torch.load("./ssast_checkpoints/SSAST-Base-Frame-400.pth")
                 self.temporal_alignment = TemporalAligner()
                 teacher_3_processor.do_normalize = True # I need to modify this later as well.
-                teacher_3_processor.mean = self.config.fbank_mean
-                teacher_3_processor.std = self.config.fbank_std
+                #teacher_3_processor.mean = self.config.fbank_mean
+                #teacher_3_processor.std = self.config.fbank_std
                 print(f"teacher_3_processor is {teacher_3_processor}")
                 converted = convert_ssast_state_dict_to_astmodel(ssast_state_dict)
                 #converted['embeddings.position_embeddings'] = converted['embeddings.position_embeddings'][:, :507, :]
