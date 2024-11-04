@@ -227,6 +227,7 @@ class MultiDistillerModel(nn.Module):
             #### this needs to be improved:
 
             #### 
+            print(f"teacher_names in config files are config.teacher_names {config.teacher_names} ")
             if len(config.teacher_names) == 1:
                 self.output_layer = nn.Sequential(
                 nn.Linear(final_emb_size, inter_dim * self.n_tasks),
