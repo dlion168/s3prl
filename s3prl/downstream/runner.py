@@ -181,7 +181,7 @@ class Runner():
         self.featurizer = self._get_featurizer()
         self.downstream = self._get_downstream()
         self.all_entries = [self.upstream, self.featurizer, self.downstream]
-        self.args.update_results = True # hacking this on the meantime because is not working well....
+        #self.args.update_results = True # hacking this on the meantime because is not working well....
         if self.args.update_results:
             print(f"[runner.py] authenticating google sheet.")
             self.worksheet = authenticate_google_sheets(json_file=args.json_file, sheet_name=f'SLLM_encoder_eval' ,worksheet_name='dowstream-performance-distilled-models')
