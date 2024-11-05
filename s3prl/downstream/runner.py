@@ -117,7 +117,7 @@ def update_currently_running_experiments(args, sheet, acc=None):
     base_start_col = 1
     num_values_cols = 25  # Number of columns to fetch/update including new ones
     
-    task_to_column = { 'asr': 4, 'pr': 5, 'sf-cer': 6, 'asv': 7, 'sd': 8, 'ks': 9, 'ic': 10, 'sf-f1': 11, 'sid': 12, 'er': 13, 'vocalset_singer_id': 14, 'vocalid': 15, 'instrument_nsynth': 16, 'pitchid-nsy': 17, 'mer-mtg-roc': 18,
+    task_to_column = { 'asr': 4, 'pr': 5, 'sf-cer': 6, 'asv': 7, 'sd': 8, 'ks': 9, 'ic': 10, 'sf-f1': 11, 'sid': 12, 'er': 13, 'vocalset_singer_id': 14, 'vocalset_technique_id': 15, 'instrument_nsynth': 16, 'pitch_nsynth': 17, 'mer-mtg-roc': 18,
                         'mer-mtg pr': 19, 'genre-mtg roc': 20, 'genre-mtg pr': 21, 'inst-mtg roc': 22,
                         'inst-mtg pr': 23, 'mt-mtg roc': 24, 'mt-mtg pr': 25 }
 
@@ -128,7 +128,7 @@ def update_currently_running_experiments(args, sheet, acc=None):
     start_col = col_to_letter(start_col_index)
     end_col = col_to_letter(end_col_index)
     
-    col_range = f'{start_col}{args.current_row}:{end_col}{args.current_row}'
+    col_range = f'{start_col}{args.current_row-downstream}:{end_col}{args.current_row-downstream}'
 
     # Fetch the current row's data
     current_general_stuff = sheet.get(col_range)
@@ -586,7 +586,7 @@ class Runner():
 
 
         acc = torch.FloatTensor(records["acc"]).mean().item() *100
-        if self.args.update_results:
+        if self.args.update_results and not_during_training:
             print(f"updating results!.")
             update_currently_running_experiments(self.args, self.worksheet, acc=acc)
 

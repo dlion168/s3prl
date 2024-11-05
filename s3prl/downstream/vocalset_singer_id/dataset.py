@@ -1,8 +1,9 @@
 import numpy as np 
 import os 
 import torchaudio
-
+torchaudio.set_audio_backend("soundfile")
 CACHE_PATH = os.path.join(os.path.dirname(__file__), '.cache/')
+print(f"torchaudio.list_audio_backends()  {torchaudio.list_audio_backends()}   ")
 
 import os
 
@@ -31,8 +32,8 @@ class SingerDataset(data.Dataset):
     
     def __getitem__(self, index):
         audio_path = self.metadata.iloc[index][0]
-        
-        wav, sr = torchaudio.load(os.path.join(self.audio_dir, "audio", audio_path), backend="soundfile")
+        torchaudio.set_audio_backend("soundfile")
+        wav, sr = torchaudio.load(os.path.join(self.audio_dir, "audio", audio_path))
         wav = torchaudio.functional.resample(wav, orig_freq=sr, new_freq=self.sample_rate)
         audio = wav.squeeze()
 

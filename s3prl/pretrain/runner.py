@@ -63,6 +63,8 @@ def determine_cluster():
         return "NSCC CLUSTER"
     elif current_dir.startswith("/export/home2"):
         return "NTU CLUSTER"
+    elif current_dir.startswith("/livingrooms/fabian/"):
+        return "battleship cluster"
     else:
         return "Unknown Cluster"
 

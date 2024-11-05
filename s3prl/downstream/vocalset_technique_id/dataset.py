@@ -31,8 +31,8 @@ class VocalTechniqueDataset(data.Dataset):
     
     def __getitem__(self, index):
         audio_path = self.metadata.iloc[index][0]
-        
-        wav, sr = torchaudio.load(os.path.join(self.audio_dir, "audio", audio_path), backend="soundfile")
+        torchaudio.set_audio_backend("soundfile")
+        wav, sr = torchaudio.load(os.path.join(self.audio_dir, "audio", audio_path))
         wav = torchaudio.functional.resample(wav, orig_freq=sr, new_freq=self.sample_rate)
         audio = wav.squeeze()
 
