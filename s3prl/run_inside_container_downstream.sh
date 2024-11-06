@@ -1,0 +1,271 @@
+#!/bin/bash
+
+source /opt/conda/bin/activate s3prl_old_cuda
+BASE_DIR_S3PRL="/workspace/s3prl/s3prl"
+cd $BASE_DIR_S3PRL
+
+distilled_model_checkpoint=$1
+task=$2
+stage=$3
+current_row=$4
+upstream=$5
+use_paper_method=true  # Set to false if you don't want the paper method
+
+echo "The upstream model is: ${distilled_model_checkpoint}"
+echo "CHECKPOINT_DIR is /workspace/s3prl/s3prl/result/pretrain/${distilled_model_checkpoint}"
+
+# Install necessary Python packages
+pip install scipy==1.5.4 librosa==0.8.0 scikit-learn==0.24.2 matplotlib==3.3.4
+
+# Configure Git and pull the latest changes if necessary
+cd /workspace/s3prl
+git config --global --add safe.directory /workspace/s3prl
+
+# Set up model checkpoint
+CHECKPOINT_DIR="/workspace/s3prl/s3prl/result/pretrain/${distilled_model_checkpoint}"
+latest_checkpoint=$(ls ${CHECKPOINT_DIR}/states-*.ckpt | sort -V | tail -n 1)
+echo "Loading the latest model: $latest_checkpoint"
+exp_setup=${distilled_model_checkpoint}/${task}
+json_file="./results-for-dd-research-f18106ee2c51.json"
+
+# Adjust exp_setup and paper argument based on the method
+if [ "$use_paper_method" = true ]; then
+  paper_arg="-s paper"
+  exp_setup="${exp_setup}_paper_method"
+else
+  paper_arg=""
+fi
+
+echo "##### running evaluation #####"
+echo "$stage $task with model $distilled_model_checkpoint"
+# Evaluation (evaluate finetune result on test dataset)
+
+export CUDA_VISIBLE_DEVICES=0
+downstream_path=/workspace/s3prl/s3prl/result/downstream
+
+
+if [ $task == "ic" ]; then
+
+ echo "running $task downstream"
+ echo "running $model model"
+ cd $BASE_DIR_S3PRL
+
+    if [ $stage == "train" ]; then
+    echo "$stage $task"
+      # Training (finetune on downstream task) # weighted sum of enc hdden states.
+      python run_downstream.py -m $stage -c "./downstream/fluent_commands/config.yaml" --update_results --current_row_downstream $current_row --json_file $json_file \
+      -u $upstream -k $latest_checkpoint $paper_arg -d fluent_commands -p ${downstream_path}/${exp_setup} --verbose
+      echo "experiment finished so we will run the evaluation."
+      echo "experiment finished so we will run the evaluation."
+      echo "\n \n \n \n \n."
+
+      python run_downstream.py \
+          -m evaluate --verbose \
+          -e ${downstream_path}/${exp_setup}/dev-best.ckpt \
+          -k $latest_checkpoint $paper_arg \
+          -u $upstream --json_file $json_file --update_results --current_row_downstream $current_row \
+          -d fluent_commands \
+          -c "./downstream/fluent_commands/config.yaml"
+          
+    elif [ $stage == "resuming" ]; then 
+      echo "$stage $task"
+      # If training is interrupted, resume training
+      python run_downstream.py -m train -e ${downstream_path}/${exp_setup}
+
+    elif [ $stage == "evaluating" ]; then
+
+      echo "eval ic..."
+      # Evaluation (evaluate finetune result on test dataset)
+      python run_downstream.py \
+          -m evaluate --verbose \
+          -e ${downstream_path}/${exp_setup}/dev-best.ckpt \
+          -k $latest_checkpoint $paper_arg \
+          -u $upstream --json_file $json_file --update_results --current_row_downstream $current_row \
+          -d fluent_commands \
+          -c "./downstream/fluent_commands/config.yaml"
+    fi
+fi
+
+if [ $task == "ks" ]; then
+
+ echo "running $task downstream"
+ echo "running $model model"
+ cd $BASE_DIR_S3PRL
+
+    if [ $stage == "train" ]; then
+    echo "$stage $task"
+      # Training (finetune on downstream task) # weighted sum of enc hdden states.
+      python run_downstream.py -m $stage -c "./downstream/speech_commands/config.yaml" -u $upstream -k $latest_checkpoint $paper_arg --update_results \
+      --current_row_downstream $current_row -d speech_commands -p ${downstream_path}/${exp_setup} \
+      --json_file $json_file --verbose \
+      -o "config.downstream_expert.datarc.speech_commands_root=/livingrooms/public/superb/speech_commands_v0.01,,\
+          config.downstream_expert.datarc.speech_commands_test_root=/livingrooms/public/superb/speech_commands_test_set_v0.01"
+      echo "experiment finished so we will run the evaluation."
+      echo "experiment finished so we will run the evaluation."
+      echo "\n \n \n \n \n."
+
+      python run_downstream.py \
+          -m evaluate --verbose \
+          -e ${downstream_path}/${exp_setup}/dev-best.ckpt \
+          -k $latest_checkpoint $paper_arg \
+          -u $upstream --json_file $json_file \
+          -d speech_commands --update_results --current_row_downstream $current_row \
+          -c "./downstream/speech_commands/config.yaml"
+          
+    elif [ $stage == "resuming" ]; then 
+      echo "$stage $task"
+      # If training is interrupted, resume training
+      python run_downstream.py -m train -e ${downstream_path}/${exp_setup}
+
+    elif [ $stage == "evaluating" ]; then
+      # Evaluation (evaluate finetune result on test dataset)
+      python run_downstream.py \
+          -m evaluate --verbose \
+          -e ${downstream_path}/${exp_setup}/dev-best.ckpt \
+          -k $latest_checkpoint $paper_arg \
+          -u $upstream --json_file $json_file --update_results --current_row_downstream $current_row \
+          -d speech_commands \
+          -c "./downstream/speech_commands/config.yaml"
+    fi
+fi
+
+if [ $task == "vocalset_singer_id" ]; then
+
+ echo "running $task downstream"
+ echo "running $model model"
+ cd $BASE_DIR_S3PRL
+
+    if [ $stage == "train" ]; then
+    echo "$stage $task"
+      # Training (finetune on downstream task) # weighted sum of enc hdden states.
+      python run_downstream.py -m $stage -c "./downstream/vocalset_singer_id/config-singularity.yaml" -u $upstream -k $latest_checkpoint $paper_arg --update_results \
+      --current_row_downstream $current_row --json_file $json_file -d vocalset_singer_id -p ${downstream_path}/${exp_setup} --verbose
+      echo "experiment finished so we will run the evaluation."
+      echo "experiment finished so we will run the evaluation."
+      echo "\n \n \n \n \n."
+
+      python run_downstream.py \
+          -m evaluate --verbose \
+          -e ${downstream_path}/${exp_setup}/dev-best.ckpt \
+          -k $latest_checkpoint $paper_arg \
+          -u $upstream --json_file $json_file --update_results --current_row_downstream $current_row \
+          -d vocalset_singer_id \
+          -c "./downstream/vocalset_singer_id/config.yaml"
+          
+    elif [ $stage == "resuming" ]; then 
+      echo "$stage $task"
+      # If training is interrupted, resume training
+      python run_downstream.py -m train -e ${downstream_path}/${exp_setup}
+
+    elif [ $stage == "evaluating" ]; then
+
+      echo "eval ic..."
+      # Evaluation (evaluate finetune result on test dataset)
+      python run_downstream.py \
+          -m evaluate --verbose \
+          -e ${downstream_path}/${exp_setup}/dev-best.ckpt \
+          -k $latest_checkpoint $paper_arg \
+          -u $upstream --json_file $json_file --update_results --current_row_downstream $current_row \
+          -d vocalset_singer_id \
+          -c "./downstream/vocalset_singer_id/config.yaml"
+    fi
+fi
+
+
+if [ $task == "vocalset_technique_id" ]; then
+
+ echo "running $task downstream"
+ echo "running $model model"
+ cd $BASE_DIR_S3PRL
+
+    if [ $stage == "train" ]; then
+    echo "$stage $task"
+      # Training (finetune on downstream task) # weighted sum of enc hdden states.
+      python run_downstream.py -m $stage -c "./downstream/vocalset_technique_id/config_singularity.yaml" -u $upstream -k $latest_checkpoint $paper_arg --update_results --current_row_downstream $current_row --json_file $json_file -d $task -p ${downstream_path}/${exp_setup} --verbose
+      echo "experiment finished so we will run the evaluation."
+      echo "experiment finished so we will run the evaluation."
+      echo "\n \n \n \n \n."
+
+      python run_downstream.py \
+          -m evaluate --verbose \
+          -e ${downstream_path}/${exp_setup}/dev-best.ckpt \
+          -k $latest_checkpoint $paper_arg \
+          -u $upstream --json_file $json_file --update_results --current_row_downstream $current_row \
+          -d $task \
+          -c "./downstream/$task/config_singularity.yaml"
+          
+    elif [ $stage == "resuming" ]; then 
+      echo "$stage $task"
+      # If training is interrupted, resume training
+      python run_downstream.py -m train -e ${downstream_path}/${exp_setup}
+
+    elif [ $stage == "evaluating" ]; then
+
+      # Evaluation (evaluate finetune result on test dataset)
+      python run_downstream.py \
+          -m evaluate --verbose \
+          -e ${downstream_path}/${exp_setup}/dev-best.ckpt \
+          -k $latest_checkpoint $paper_arg \
+          -u $upstream --json_file $json_file --update_results --current_row_downstream $current_row \
+          -d $task \
+          -c "./downstream/$task/config_singularity.yaml"
+    fi
+fi
+
+
+
+
+
+if [ $task == "asr" ]; then
+
+ echo "running $task downstream"
+ echo "running $model model"
+ cd $BASE_DIR_S3PRL
+ 
+
+    if [ $stage == "train" ]; then
+      echo "$stage $task"
+      # Training (finetune on downstream task) # weighted sum of enc hdden states.
+      python run_downstream.py -m $stage -c "./downstream/asr/config.yaml" -u $upstream -k $latest_checkpoint $paper_arg -d asr --json_file $json_file --current_row_downstream $current_row -p ${downstream_path}/${exp_setup} --verbose \
+        -o "config.runner.gradient_accumulate_steps=1,,config.downstream_expert.datarc.train_batch_size=32,,config.downstream_expert.datarc.eval_batch_size=32,,\
+        config.downstream_expert.datarc.bucket_file=./data/len_for_bucket"
+
+      
+      echo "experiment finished so we will run the evaluation."
+      echo "experiment finished so we will run the evaluation."
+      echo "\n \n \n \n \n."
+
+      python run_downstream.py \
+          -m evaluate --verbose \
+          -e ${downstream_path}/${exp_setup}/dev-clean-best.ckpt \
+          -k $latest_checkpoint $paper_arg --json_file $json_file \
+          -u $upstream --update_results --current_row_downstream $current_row \
+          -d asr -t "test-clean" \
+          -c "./downstream/asr/config.yaml" \
+          -o "config.runner.gradient_accumulate_steps=1,,config.downstream_expert.datarc.train_batch_size=32,,config.downstream_expert.datarc.eval_batch_size=32,,\
+            config.downstream_expert.datarc.bucket_file=./data/len_for_bucket"
+
+
+
+    elif [ $stage == "resuming" ]; then 
+    echo "$stage $task"
+      # If training is interrupted, resume training
+      python run_downstream.py -m train -e ${downstream_path}/${exp_setup}
+
+    elif [ $stage == "evaluating" ]; then
+
+      python run_downstream.py \
+          -m evaluate --verbose \
+          -e ${downstream_path}/${exp_setup}/dev-clean-best.ckpt \
+          -k $latest_checkpoint $paper_arg --json_file $json_file \
+          -u $upstream --update_results --current_row_downstream $current_row --current_row $current_row \
+          -d asr -t "test-clean" \
+          -c "./downstream/asr/config.yaml" \
+          -o "config.runner.gradient_accumulate_steps=1,,config.downstream_expert.datarc.train_batch_size=32,,config.downstream_expert.datarc.eval_batch_size=32,,\
+            config.downstream_expert.datarc.bucket_file=./data/len_for_bucket"
+
+
+    fi
+
+fi
+
