@@ -152,6 +152,10 @@ def update_currently_running_experiments(args, sheet, acc=None):
         task_col = task_to_column.get(args.downstream)
         if task_col is not None:
             try:
+                # Ensure current_general_stuff has exactly num_values_cols columns
+                if len(current_general_stuff[0]) < num_values_cols:
+                    # Extend with empty strings to meet the required column count
+                    current_general_stuff[0].extend([''] * (num_values_cols - len(current_general_stuff[0])))
                 # Attempt to update only the relevant downstream task column
                 current_general_stuff[0][task_col - 1] = acc  # Assuming `acc` is the new performance value to be updated
                 print(f"Updating task {args.downstream} performance to {acc}")
