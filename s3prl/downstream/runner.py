@@ -140,6 +140,7 @@ def update_currently_running_experiments(args, sheet, acc=None):
         
         # Update the relevant downstream task performance (based on the task_to_column dict)
         task_col = task_to_column.get(args.downstream)
+        print(f"the acc to add is {acc}")
         if task_col is not None:
             values_general_stuff[0][task_col - 1] = acc  # Filling the accuracy or performance value
 
@@ -150,11 +151,15 @@ def update_currently_running_experiments(args, sheet, acc=None):
         # Row exists; update only the downstream task column
         task_col = task_to_column.get(args.downstream)
         if task_col is not None:
-            current_general_stuff[0][task_col - 1] = acc  # Assuming `acc` is the new performance value to be updated
-
-            print(f"Updating task {args.downstream} performance to {acc}")
-            sheet.update(col_range, current_general_stuff)
-
+            try:
+                # Attempt to update only the relevant downstream task column
+                current_general_stuff[0][task_col - 1] = acc  # Assuming `acc` is the new performance value to be updated
+                print(f"Updating task {args.downstream} performance to {acc}")
+                sheet.update(col_range, current_general_stuff)
+            except IndexError:
+                print(f"current_general_stuff len is {len(current_general_stuff)} and it looks like:")
+                print(current_general_stuff)
+                print(f"IndexError: task_col {task_col} is out of range for current_general_stuff. No update made for {args.downstream}.")
 
 
 
