@@ -81,7 +81,7 @@ def col_to_letter(col):
 def update_currently_running_experiments(args,config, sheet, epoch=None, total_epochs=None):
     running_where = determine_cluster()
     upstream_config = yaml.load(open(args.upstream_config, "r"), Loader=yaml.FullLoader)
-    upstream_parameters = upstream_config["multi_distiller"]
+    upstream_parameters = upstream_config[args.upstream] # should be either distiller or multi_distiller , hopefully
 
 
     # Determine the status
@@ -105,13 +105,21 @@ def update_currently_running_experiments(args,config, sheet, epoch=None, total_e
 
     current_general_stuff = sheet.get(col_range)
 
+    
+    print(f"upstream_parameters  ... {upstream_parameters}")
     if not any(current_general_stuff):
         # If the row is empty, add the initial values
-        values_general_stuff = [[args.expdir.split("/")[-1], "DistilHub normal style", "l1 + cos", "", upstream_parameters["teacher_names"][0], upstream_parameters["initialize_from"][0], upstream_parameters["translator_type"], config['optimizer']['name'], config['optimizer']['lr']  ,running_where  ,os.getenv('USER'), status, args.sheet_row, args.expdir ,args.logfile, "" ]]
+        if args.upstream == "distiller":
+            values_general_stuff = [[args.expdir.split("/")[-1], "DistilHub normal style", "l1 + cos", "", "hubert_base", "teacher model", "None", config['optimizer']['name'], config['optimizer']['lr']  ,running_where  ,os.getenv('USER'), status, args.sheet_row, args.expdir ,args.logfile, "" ]]
+        else:
+            values_general_stuff = [[args.expdir.split("/")[-1], "DistilHub normal style", "l1 + cos", "", upstream_parameters["teacher_names"][0], upstream_parameters["initialize_from"][0], upstream_parameters["translator_type"], config['optimizer']['name'], config['optimizer']['lr']  ,running_where  ,os.getenv('USER'), status, args.sheet_row, args.expdir ,args.logfile, "" ]]
         print(f"Adding currently running experiment details")
         sheet.update(col_range, values_general_stuff)
     else:
-        values_general_stuff = [[args.expdir.split("/")[-1], "DistilHub normal style", "l1 + cos", "", upstream_parameters["teacher_names"][0], upstream_parameters["initialize_from"][0], upstream_parameters["translator_type"], config['optimizer']['name'], config['optimizer']['lr']  ,running_where  ,os.getenv('USER'), status, args.sheet_row, args.expdir ,args.logfile, "" ]]
+        if args.upstream == "distiller":
+            values_general_stuff = [[args.expdir.split("/")[-1], "DistilHub normal style", "l1 + cos", "", "hubert_base", "teacher model", "None", config['optimizer']['name'], config['optimizer']['lr']  ,running_where  ,os.getenv('USER'), status, args.sheet_row, args.expdir ,args.logfile, "" ]]
+        else:
+            values_general_stuff = [[args.expdir.split("/")[-1], "DistilHub normal style", "l1 + cos", "", upstream_parameters["teacher_names"][0], upstream_parameters["initialize_from"][0], upstream_parameters["translator_type"], config['optimizer']['name'], config['optimizer']['lr']  ,running_where  ,os.getenv('USER'), status, args.sheet_row, args.expdir ,args.logfile, "" ]]
         # Update only the status column, keep other values unchanged
         current_general_stuff[0][11] = status  # Assuming status is the 11th column (index 10)
         print(f"Updating status to {status}")
@@ -384,7 +392,7 @@ class Runner():
                     scheduler.step()
 
                 # Record the loss for this batch
-                epoch_train_loss += loss.item()
+                #epoch_train_loss += loss.item()
                 # logging
                 if global_step % self.config['runner']['log_step'] == 0 or pbar.n == pbar.total -1:
                     # log loss

@@ -148,6 +148,7 @@ def update_currently_running_experiments(args, sheet, acc=None):
         sheet.update(col_range, values_general_stuff)
     
     else:
+        print(f"the acc to add is {acc}")
         # Row exists; update only the downstream task column
         task_col = task_to_column.get(args.downstream)
         if task_col is not None:
