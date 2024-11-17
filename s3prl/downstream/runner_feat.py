@@ -95,6 +95,7 @@ class Runner():
         self.featurizer = self._get_featurizer()
         self.downstream = self._get_downstream()
         self.all_entries = [self.upstream, self.featurizer, self.downstream]
+        self.process = psutil.Process(os.getpid())
 
 
     def _load_weight(self, model, name):
@@ -228,6 +229,7 @@ class Runner():
 
 
     def train(self):
+        print(f"Memory usage: {self.process.memory_info().rss / (1024 * 1024)} MB")
         # trainable parameters and train/eval mode
         trainable_models = []
         trainable_paras = []
@@ -258,6 +260,17 @@ class Runner():
         if self.config.get('specaug'):
             from .specaug import SpecAug
             specaug = SpecAug(**self.config["specaug"])
+        
+        # add gaussian noise
+        add_noise = None
+        if self.config.get('add_noise'):
+            from .noise import AddNoise
+            add_noise = AddNoise(**self.config["add_noise"])
+            
+        mixup = None
+        if self.config.get('mixup'):
+            from .mixup import Mixup
+            mixup = Mixup(**self.config["mixup"])
 
         # progress bar
         tqdm_file = sys.stderr if is_leader_process() else open(os.devnull, 'w')
@@ -288,6 +301,7 @@ class Runner():
 
             for batch_id, (wavs, *others) in enumerate(tqdm(dataloader, dynamic_ncols=True, desc='train', file=tqdm_file)):
                 # try/except block for forward/backward
+                # print(f"Memory usage: {self.process.memory_info().rss / (1024 * 1024)} MB")
                 try:
                     if pbar.n >= pbar.total:
                         break
@@ -352,9 +366,20 @@ class Runner():
                             if specaug:
                                 features, _ = specaug(features)
                         else:
-                            features = {"hidden_states": [w.to(self.args.device) for w in wavs]}
+                            import time
+                            
+                            features = [w.to(self.args.device) for w in wavs]
+                            features = {"hidden_states": features}
                             features = self.featurizer.model([], features)
-                           
+                            if mixup:
+                                features, others[0] = mixup(features, others[0], num_classes=dataloader.dataset.num_classes)
+                            
+                            if specaug:
+                                features, _ = specaug(features)
+                                
+                            if add_noise:
+                                features, _ = add_noise(features)
+                    
                         if features[0].dtype == torch.half:
                             features = [f.float() for f in features]
                         loss = self.downstream.model(
