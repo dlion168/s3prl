@@ -346,6 +346,17 @@ class Runner():
         if self.config.get('specaug'):
             from .specaug import SpecAug
             specaug = SpecAug(**self.config["specaug"])
+            
+        # add gaussian noise
+        add_noise = None
+        if self.config.get('add_noise'):
+            from .noise import AddNoise
+            add_noise = AddNoise(**self.config["add_noise"])
+            
+        mixup = None
+        if self.config.get('mixup'):
+            from .mixup import Mixup
+            mixup = Mixup(**self.config["mixup"])
 
         # progress bar
         tqdm_file = sys.stderr if is_leader_process() else open(os.devnull, 'w')
@@ -392,8 +403,15 @@ class Runner():
                         features = self.featurizer.model(wavs, features)
                         if features[0].dtype == torch.half:
                             features = [f.float() for f in features]
+                        
+                        if mixup:
+                            features, others[0] = mixup(features, others[0], num_classes=dataloader.dataset.num_classes)
+                        
                         if specaug:
                             features, _ = specaug(features)
+                            
+                        if add_noise:
+                            features, _ = add_noise(features)
 
                         loss = self.downstream.model(
                             train_split,
