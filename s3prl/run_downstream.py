@@ -75,7 +75,9 @@ def get_downstream_args():
     parser.add_argument('--json_file', type=str,default="/export/home2/fabian/projects/dataset_distillation/robust-superb/s3prl/results-for-dd-research-f18106ee2c51.json")#i can reuse my same json file.
     parser.add_argument('--sheet_row', type=int, default=1,help='the row number on where this pre-trained model experiment will be in the downstream experiment results.  set to 1 for now.')
     parser.add_argument('--current_row_downstream', type=int, default=2,help='pretrain-excel sheet row for model that is currently runing.')
+    parser.add_argument('--logfile_row_downstream', type=int, default=None,help='pretrain-excel sheet row for model that is currently runing.')
     parser.add_argument('--find_best_checkpoint', action='store_true', help="to iterate folder and fend the best train loss checkpoint... (Fabian)")
+    parser.add_argument('--logfile', type=str,default=None)#i can reuse my same json file.
 
     # experiment directory, choose one to specify
     # expname uses the default root directory: result/downstream
@@ -99,6 +101,9 @@ def get_downstream_args():
 
     if args.expdir is None:
         args.expdir = f'result/downstream/{args.expname}'
+    
+    if not args.logfile_row_downstream:
+        args.logfile_row_downstream = args.current_row_downstream
 
     if args.auto_resume:
         if os.path.isdir(args.expdir):

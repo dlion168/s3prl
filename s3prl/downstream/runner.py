@@ -92,6 +92,17 @@ def list_sheets(json_file):
     for sheet in sheet_list:
         print(sheet.title)
 
+def determine_cluster():
+    current_dir = os.getcwd()
+    print(f"current_dir in determine_cluster is {current_dir}")
+    if current_dir.startswith("/home/project/") or current_dir.startswith("/data/projects"):
+        return "NSCC CLUSTER"
+    elif current_dir.startswith("/export/home2"):
+        return "NTU CLUSTER"
+    elif current_dir.startswith("/livingrooms/fabian/"):
+        return "battleship cluster"
+    else:
+        return "Unknown Cluster, probably twcc"
 
 ### for better management of experiments that are being run #### -> this will update an excell sheet automatically.
 def authenticate_google_sheets(json_file, sheet_name, worksheet_name):
@@ -109,6 +120,60 @@ def col_to_letter(col_num):
         col_num, remainder = divmod(col_num - 1, 26)
         string = chr(65 + remainder) + string
     return string
+
+def update_logfiles_experiments(args, sheet):
+
+    # Define the base starting column index ('A' -> 1)
+    base_start_col = 1
+    num_values_cols = 25  # Number of columns to fetch/update including new ones
+    running_where = determine_cluster()
+    
+    task_to_column = { 'asr': 4, 'pr': 5, 'sf-cer': 6, 'asv': 7, 'sd': 8, 'speech_commands': 9, 'fluent_commands': 10, 'sf-f1': 11, 'sid': 12, 'er': 13, 'vocalset_singer_id': 14, 'vocalset_technique_id': 15, 'instrument_nsynth': 16, 'pitch_nsynth': 17, 'mer-mtg-roc': 18,
+                        'mer-mtg pr': 19, 'genre-mtg roc': 20, 'genre-mtg pr': 21, 'inst-mtg roc': 22,
+                        'inst-mtg pr': 23, 'mt-mtg roc': 24, 'mt-mtg pr': 25 }
+
+    # Calculate the starting column for the current fold
+    start_col_index = base_start_col
+    end_col_index = start_col_index + num_values_cols - 1
+    
+    start_col = col_to_letter(start_col_index)
+    end_col = col_to_letter(end_col_index)
+    
+    col_range = f'{start_col}{args.logfile_row_downstream}:{end_col}{args.logfile_row_downstream}'
+
+    # Fetch the current row's data
+    current_general_stuff = sheet.get(col_range)
+
+    # If the row is empty, initialize it with model details and accuracy
+    if not any(current_general_stuff):
+        # Fill in basic information
+        values_general_stuff = [[args.upstream_ckpt.split("/")[-2], args.upstream_feature_selection, running_where] + [''] * (num_values_cols - 3)]  # Replace with dynamic information
+        
+        # Update the relevant downstream task performance (based on the task_to_column dict)
+        task_col = task_to_column.get(args.downstream)
+        if task_col is not None:
+            values_general_stuff[0][task_col - 1] = args.logfile  # Filling the accuracy or performance value
+
+        print(f"Adding logfile info which is {args.logfile}")
+        sheet.update(col_range, values_general_stuff)
+    
+    else:
+        print(f"Adding logfile info which is {args.logfile}")
+        # Row exists; update only the downstream task column
+        task_col = task_to_column.get(args.downstream)
+        if task_col is not None:
+            try:
+                # Ensure current_general_stuff has exactly num_values_cols columns
+                if len(current_general_stuff[0]) < num_values_cols:
+                    # Extend with empty strings to meet the required column count
+                    current_general_stuff[0].extend([''] * (num_values_cols - len(current_general_stuff[0])))
+                # Attempt to update only the relevant downstream task column
+                current_general_stuff[0][task_col - 1] = args.logfile  # Assuming `acc` is the new performance value to be updated
+                sheet.update(col_range, current_general_stuff)
+            except IndexError:
+                print(f"current_general_stuff len is {len(current_general_stuff)} and it looks like:")
+                print(current_general_stuff)
+                print(f"IndexError: task_col {task_col} is out of range for current_general_stuff. No update made for {args.downstream}.")
 
 
 def update_currently_running_experiments(args, sheet, acc=None):
@@ -195,6 +260,10 @@ class Runner():
         if self.args.update_results:
             print(f"[runner.py] authenticating google sheet.")
             self.worksheet = authenticate_google_sheets(json_file=args.json_file, sheet_name=f'SLLM_encoder_eval' ,worksheet_name='dowstream-performance-distilled-models')
+            self.worksheet2 = authenticate_google_sheets(json_file=args.json_file, sheet_name=f'SLLM_encoder_eval' ,worksheet_name='Dowstream-performance-distilled-models-logfiles')
+
+        if self.args.logfile and self.args.update_results:
+            update_logfiles_experiments(self.args, self.worksheet2)
 
 
     def _load_weight(self, model, name):
