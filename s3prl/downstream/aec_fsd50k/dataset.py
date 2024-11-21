@@ -11,7 +11,7 @@ import csv
 
 CACHE_PATH = os.path.join(os.path.dirname(__file__), '.cache/')
 
-class ESC50Dataset(data.Dataset):
+class FSD50KDataset(data.Dataset):
     def __init__(self, root_dir, folds, sample_rate=16000, return_audio_path=True):
         """
         Args:
@@ -27,9 +27,6 @@ class ESC50Dataset(data.Dataset):
         self.data = []
         # Load label vocabulary
         self.class2id, self.id2class = self._load_label_vocabulary(os.path.join(root_dir, "labelvocabulary.csv"))
-        self.num_classes = len(self.id2class)
-        self.norm_mean = -6.627
-        self.norm_std = 5.359
         
         # Load data
         for fold in folds:
@@ -99,7 +96,7 @@ class ESC50Dataset(data.Dataset):
         return zip(*samples)
 
 
-class ESC50FeatureDataset(data.Dataset):
+class FSD50KFeatureDataset(data.Dataset):
     def __init__(self, root_dir, feature_dir, folds, sample_rate=16000, return_audio_path=True):
         """
         Args:
@@ -116,7 +113,6 @@ class ESC50FeatureDataset(data.Dataset):
         self.data = []
         # Load label vocabulary
         self.class2id, self.id2class = self._load_label_vocabulary(os.path.join(root_dir, "labelvocabulary.csv"))
-        self.num_classes = len(self.id2class)
         
         # Load data
         for fold in folds:
@@ -174,7 +170,7 @@ class ESC50FeatureDataset(data.Dataset):
         feature = torch.load(audio_path, map_location="cpu")
         if len(feature[0].shape) == 1:
             feature = [f.unsqueeze(0).unsqueeze(0) for f in feature]
-        elif len(feature[0].shape) == 2:
+        elif len(feature.shape) == 2:
             feature = [f.unsqueeze(0) for f in feature]
         
         # Return based on whether audio path should be included
