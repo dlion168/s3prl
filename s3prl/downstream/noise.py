@@ -10,7 +10,7 @@ import torch
 
 class AddNoise(torch.nn.Module):
     """Class to add random Gaussian noise to features."""
-    def __init__(self, noise_mean=0.0, noise_std=0.005, intensity=1.0):
+    def __init__(self, location="wav", noise_mean=0.0, noise_std=0.005, intensity=1.0):
         """
         Args:
             noise_mean (float): Mean of the Gaussian noise.
@@ -21,6 +21,7 @@ class AddNoise(torch.nn.Module):
         self.noise_mean = noise_mean
         self.noise_std = noise_std
         self.intensity = intensity
+        self.location = location
 
     def add_noise(self, x):
         """Applies random Gaussian noise to the input tensor.
