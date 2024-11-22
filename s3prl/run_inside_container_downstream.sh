@@ -281,3 +281,44 @@ if [ $task == "asr" ]; then
 
 fi
 
+if [ $task == "instrument_nsynth" ] || [ $task == "pitch_nsynth" ]; then
+
+ echo "running $task downstream"
+ echo "running $model model"
+ cd $BASE_DIR_S3PRL
+
+    if [ $stage == "train" ]; then
+    echo "$stage $task"
+      # Training (finetune on downstream task) # weighted sum of enc hdden states.
+      python run_downstream.py -m $stage -c "./downstream/$task/config_singularity.yaml" -u $upstream -k $latest_checkpoint $paper_arg --update_results --current_row_downstream $current_row \
+      --logfile $logfile --logfile_row_downstream $logfile_row --json_file $json_file -d $task -p ${downstream_path}/${exp_setup} --verbose
+      echo "experiment finished so we will run the evaluation."
+      echo "experiment finished so we will run the evaluation."
+      echo "\n \n \n \n \n."
+
+      python run_downstream.py \
+          -m evaluate --verbose \
+          -e ${downstream_path}/${exp_setup}/dev-best.ckpt \
+          -k $latest_checkpoint $paper_arg \
+          -u $upstream --json_file $json_file --update_results --current_row_downstream $current_row \
+          -d $task \
+          -c "./downstream/$task/config_singularity.yaml"
+          
+    elif [ $stage == "resuming" ]; then 
+      echo "$stage $task"
+      # If training is interrupted, resume training
+      python run_downstream.py -m train -e ${downstream_path}/${exp_setup}
+
+    elif [ $stage == "evaluating" ]; then
+
+      # Evaluation (evaluate finetune result on test dataset)
+      python run_downstream.py \
+          -m evaluate --verbose \
+          -e ${downstream_path}/${exp_setup}/dev-best.ckpt \
+          -k $latest_checkpoint $paper_arg \
+          -u $upstream --json_file $json_file --update_results --current_row_downstream $current_row \
+          -d $task \
+          -c "./downstream/$task/config_singularity.yaml"
+    fi
+fi
+
