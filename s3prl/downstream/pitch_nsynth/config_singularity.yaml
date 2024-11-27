@@ -25,7 +25,7 @@ optimizer:
 
 downstream_expert: 
   datarc:
-    meta_data: /workspace/audio_data/NSynth
+    meta_data: /livingrooms/public/superb/NSynth
     num_workers: 8
     train_batch_size: 64
     eval_batch_size: 1

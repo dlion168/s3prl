@@ -12,6 +12,8 @@ current_row=$4
 upstream=$5
 logfile=$6
 logfile_row=$7
+checkpoint_method=${8:-"hardcoded"}  # Default to "hardcoded" method
+
 
 
 use_paper_method=true  # Set to false if you don't want the paper method
@@ -23,7 +25,7 @@ echo "nvidia-smi "
 nvidia-smi
 
 # Install necessary Python packages
-pip install scipy==1.5.4 librosa==0.8.0 scikit-learn==0.24.2 matplotlib==3.3.4 modelscope==1.11.0
+pip install networkx pytorch-nlp transformers datasets==2.4.0 scipy==1.5.4 librosa==0.8.0 scikit-learn==0.24.2 matplotlib==3.3.4 modelscope==1.11.0
 
 # Configure Git and pull the latest changes if necessary
 cd /workspace/s3prl
@@ -32,7 +34,27 @@ git config --global --add safe.directory /workspace/s3prl
 # Set up model checkpoint
 CHECKPOINT_DIR="/workspace/s3prl/s3prl/result/pretrain/${distilled_model_checkpoint}"
 #latest_checkpoint=$(ls ${CHECKPOINT_DIR}/states-*.ckpt | sort -V | tail -n 1)
-latest_checkpoint="result/pretrain/$distilled_model_checkpoint/learning_by_addition.ckpt" #  learning_by_addition_2nd_approach.ckpt     learning_by_addition.ckpt
+#latest_checkpoint="result/pretrain/$distilled_model_checkpoint/learning_by_addition.ckpt" #  learning_by_addition_2nd_approach.ckpt     learning_by_addition.ckpt
+# Function to determine the latest checkpoint
+select_latest_checkpoint() {
+  local method=$1
+  case $method in
+    "list_based")
+      echo "$(ls ${CHECKPOINT_DIR}/states-*.ckpt | sort -V | tail -n 1)"
+      ;;
+    "hardcoded")
+      echo "${CHECKPOINT_DIR}/learning_by_addition.ckpt"  # Default hardcoded checkpoint
+      ;;
+    *)
+      echo "Unknown checkpoint selection method: $method" >&2
+      exit 1
+      ;;
+  esac
+}
+
+latest_checkpoint=$(select_latest_checkpoint $checkpoint_method)
+echo "Loading the latest model: $latest_checkpoint"
+
 
 echo "Loading the latest model: $latest_checkpoint"
 exp_setup=${distilled_model_checkpoint}/${task}
@@ -224,9 +246,6 @@ if [ $task == "vocalset_technique_id" ]; then
 fi
 
 
-
-
-
 if [ $task == "asr" ]; then
 
  echo "running $task downstream"
@@ -291,7 +310,7 @@ if [ $task == "instrument_nsynth" ] || [ $task == "pitch_nsynth" ]; then
     echo "$stage $task"
       # Training (finetune on downstream task) # weighted sum of enc hdden states.
       python run_downstream.py -m $stage -c "./downstream/$task/config_singularity.yaml" -u $upstream -k $latest_checkpoint $paper_arg --update_results --current_row_downstream $current_row \
-      --logfile $logfile --logfile_row_downstream $logfile_row --json_file $json_file -d $task -p ${downstream_path}/${exp_setup} --verbose
+      --logfile $logfile --logfile_row_downstream $logfile_row --json_file $json_file -d $task -p ${downstream_path}/${exp_setup}_debug --verbose
       echo "experiment finished so we will run the evaluation."
       echo "experiment finished so we will run the evaluation."
       echo "\n \n \n \n \n."
@@ -319,6 +338,55 @@ if [ $task == "instrument_nsynth" ] || [ $task == "pitch_nsynth" ]; then
           -u $upstream --json_file $json_file --update_results --current_row_downstream $current_row \
           -d $task \
           -c "./downstream/$task/config_singularity.yaml"
+    fi
+fi
+
+if [ $task == "aec_esc50" ]; then
+
+
+ echo "running $task downstream"
+ echo "running $model model"
+ cd $BASE_DIR_S3PRL
+
+    if [ $stage == "train" ]; then
+    echo "$stage $task"
+
+    for test_fold in fold1 fold2 fold3 fold4 fold5; do
+    echo "running fold $test_fold"
+      # Training (finetune on downstream task) # weighted sum of enc hdden states.
+      python run_downstream.py -m $stage -c "./downstream/$task/config.yaml" -u $upstream -k $latest_checkpoint $paper_arg --update_results --current_row_downstream $current_row \
+      --logfile $logfile --logfile_row_downstream $logfile_row --json_file $json_file -d $task -p ${downstream_path}/${exp_setup}_${test_fold} --verbose \
+      -o "config.downstream_expert.datarc.test_fold=$test_fold"
+      echo "experiment finished so we will run the evaluation."
+      echo "experiment finished so we will run the evaluation."
+      echo "\n \n \n \n \n."
+
+      python run_downstream.py \
+          -m evaluate --verbose \
+          -e ${downstream_path}/${exp_setup}_${test_fold}/dev-best.ckpt \
+          -k $latest_checkpoint $paper_arg \
+          -u $upstream --json_file $json_file --update_results --current_row_downstream $current_row \
+          -d $task \
+          -c "./downstream/$task/config.yaml" -o "config.downstream_expert.datarc.test_fold=$test_fold"
+    done
+          
+    elif [ $stage == "resuming" ]; then 
+      echo "$stage $task"
+      # If training is interrupted, resume training
+      python run_downstream.py -m train -e ${downstream_path}/${exp_setup}_${test_fold}
+
+    elif [ $stage == "evaluating" ]; then
+      for test_fold in fold1 fold2 fold3 fold4 fold5; do
+
+        # Evaluation (evaluate finetune result on test dataset)
+        python run_downstream.py \
+            -m evaluate --verbose \
+            -e ${downstream_path}/${exp_setup}_${test_fold}/dev-best.ckpt \
+            -k $latest_checkpoint $paper_arg \
+            -u $upstream --json_file $json_file --update_results --current_row_downstream $current_row \
+            -d $task \
+            -c "./downstream/$task/config.yaml" -o "config.downstream_expert.datarc.test_fold=$test_fold"
+      done
     fi
 fi
 
