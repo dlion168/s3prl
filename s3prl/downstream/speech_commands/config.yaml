@@ -24,8 +24,8 @@ optimizer:
 
 downstream_expert:
   datarc:
-    speech_commands_root: ../../../../livingrooms/public/superb/speech_commands_v0.01
-    speech_commands_test_root: ../../../../livingrooms/public/superb/speech_commands_test_set_v0.01
+    speech_commands_root: /export/home2/fabian/corpus/superb/keyword_spotting/speech_commands_v0.01
+    speech_commands_test_root: /export/home2/fabian/corpus/superb/keyword_spotting/speech_commands_test_set_v0.01
     num_workers: 8
     batch_size: 32
 

@@ -49,7 +49,6 @@ class DistillerBuilder(nn.Module):
         self.load = bool(strtobool(options["load_pretrain"]))
         self.no_grad = bool(strtobool(options["no_grad"]))
         self.permute_input = bool(strtobool(options["permute_input"]))
-
         # Set model config
         self.model_config = MultiDistillerConfig(self.config["multi_distiller"])
         self.hidden_size = self.model_config.encoder_embed_dim

@@ -561,6 +561,8 @@ class MultiDistillerForPretrain(nn.Module):
         if self.cosine_loss > 0:
             print("[DistillerForPretrain] - Enabled cosine similarity loss.")
         
+        #import pdb
+        #pdb.set_trace()
         # Ensure that we can only load weights from hubert_base or mert_v0_public
         model_to_initialize = self.config.initialize_from[0]
         if model_to_initialize == 'ast':
@@ -941,10 +943,12 @@ class MultiDistillerForPretrain(nn.Module):
         sim_layer_loss_dict = {}
 
         #print(f"fix here for when you use more teachers....")
-
         # Iterate over each teacher's predictions and targets
         for teacher_key in target.keys(): ## on the meantime.... this needs to be fixed
-            teacher_pred = pred    # [teacher_key]  # Prediction from the current teacher
+            if type(pred) == dict:
+                teacher_pred = pred[teacher_key]
+            else:
+                teacher_pred = pred    # [teacher_key]  # Prediction from the current teacher
             teacher_target = target[teacher_key]  # Target corresponding to the current teacher
             
             aligned_preds = []  # To store aligned student features
