@@ -27,7 +27,6 @@ class DistillerBuilder(nn.Module):
 
     def __init__(self, options, config, verbose=False):
         super().__init__()
-
         # read config
         if config is not None:
             self.config = yaml.load(open(config, "r"), Loader=yaml.FullLoader)
@@ -50,7 +49,11 @@ class DistillerBuilder(nn.Module):
         self.permute_input = bool(strtobool(options["permute_input"]))
 
         # Set model config
-        self.model_config = DistillerConfig(self.config["distiller"])
+        try:
+            self.model_config = DistillerConfig(self.config["distiller"])
+        except KeyError:
+            self.model_config = DistillerConfig(self.all_states["Up_Config"]["distiller"])
+        
         self.hidden_size = self.model_config.encoder_embed_dim
         self.max_input_length = 0
 
