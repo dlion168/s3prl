@@ -128,7 +128,7 @@ def update_logfiles_experiments(args, sheet):
     num_values_cols = 25  # Number of columns to fetch/update including new ones
     running_where = determine_cluster()
     
-    task_to_column = { 'asr': 4, 'pr': 5, 'sf-cer': 6, 'asv': 7, 'sd': 8, 'speech_commands': 9, 'fluent_commands': 10, 'sf-f1': 11, 'sid': 12, 'er': 13, 'vocalset_singer_id': 14, 'vocalset_technique_id': 15, 'instrument_nsynth': 16, 'pitch_nsynth': 17, 'mer-mtg-roc': 18,
+    task_to_column = { 'asr': 4, 'pr': 5, 'sf-cer': 6, 'asv': 7, 'sd': 8, 'speech_commands': 9, 'fluent_commands': 10, 'sf-f1': 11, 'sid': 12, 'er': 13, 'vocalset_singer_id': 14, 'vocalset_technique_id': 15, 'instrument_nsynth': 16, 'pitch_nsynth': 17, 'aec_esc50': 18,
                         'mer-mtg pr': 19, 'genre-mtg roc': 20, 'genre-mtg pr': 21, 'inst-mtg roc': 22,
                         'inst-mtg pr': 23, 'mt-mtg roc': 24, 'mt-mtg pr': 25 }
 
@@ -263,6 +263,7 @@ class Runner():
             self.worksheet2 = authenticate_google_sheets(json_file=args.json_file, sheet_name=f'SLLM_encoder_eval' ,worksheet_name='Dowstream-performance-distilled-models-logfiles')
 
         if self.args.logfile and self.args.update_results:
+            print(f"updating logfile info!")
             update_logfiles_experiments(self.args, self.worksheet2)
 
 

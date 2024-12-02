@@ -64,11 +64,11 @@ def compute_task_vector(base_state_dict, target_state_dict):
                       f"{base_state_dict[key].shape} vs {target_state_dict[key].shape}")
     return task_vector
 
-def apply_task_vector(base_state_dict, task_vector):
+def apply_task_vector(base_state_dict, task_vector, weight=1):
     """Apply a task vector to a base state dict by adding the vector."""
     combined_state_dict = {}
     for key in base_state_dict.keys():
-        combined_state_dict[key] = base_state_dict[key] + task_vector.get(key, torch.zeros_like(base_state_dict[key]))
+        combined_state_dict[key] = base_state_dict[key] + weight * task_vector.get(key, torch.zeros_like(base_state_dict[key]))
     return combined_state_dict
 
 def modify_config(config):
@@ -89,7 +89,7 @@ def assemble_new_checkpoint(state_dict, config, args=None):
         new_checkpoint['Args'] = args
     return new_checkpoint
 
-def task_arithmetic(model_paths, save_path):
+def task_arithmetic(args, model_paths, save_path):
     # Load base (Theta 0) model
     
     # Load Theta M and Theta H models
@@ -137,8 +137,9 @@ def task_arithmetic(model_paths, save_path):
     speech_vector = compute_task_vector(base_state_dict, theta_h_state_dict)
     
     # Combine task vectors with base model
-    combined_state_dict = apply_task_vector(base_state_dict, music_vector)
-    combined_state_dict = apply_task_vector(combined_state_dict, speech_vector)
+    combined_state_dict = apply_task_vector(base_state_dict, speech_vector, args.lambda1)
+    combined_state_dict = apply_task_vector(combined_state_dict, music_vector, args.lambda2)
+
     
     # Modify config to reflect the new teacher combination
     config = modify_config(theta_m_checkpoint["Config"])
@@ -153,7 +154,14 @@ if __name__ == "__main__":
     # Fix seed and make backends deterministic
     parser = argparse.ArgumentParser()
     parser.add_argument('--seed', default=1337, type=int)
-    parser.add_argument('--lambda', default=1, type=int, help="the weight to add for the second task vector.")
+    parser.add_argument('--lambda1', default=1, type=float, help="the weight to add for the first task vector (speech).")
+    parser.add_argument('--lambda2', default=1, type=float, help="the weight to add for the second task vector (music).")
+    args = parser.parse_args()
+
+    assert args.lambda1 + args.lambda2 == 1, "Error: lambda1 and lambda2 must sum to 1!"
+    print(f"using lambdas: speech: {args.lambda1}  music: {args.lambda2}")
+
+
     
     seed = 1337
     random.seed(seed)
@@ -167,7 +175,7 @@ if __name__ == "__main__":
     # Paths to your two models for Theta M and Theta H
     model_paths = [
         'result/pretrain/distill_only_mert-init-weight-from-hubert_base-models-simple-avg-pool-for-teacher-train-libri-960/states-epoch-25.ckpt',  # Theta M
-        'result/pretrain/DistilHuBERT_100hrs_libri_l1_cos/dev-dis-best-168-epoch-exp.ckpt',  # Theta H
+        'result/pretrain/DistilHuBERT_100hrs_libri_l1_cos/dev-dis-best-168-epoch-exp.ckpt',  # Change for Librispeech 960 one later on.
     ]
 
     # result/pretrain/DistilHuBERT_100hrs_libri_l1_cos/dev-dis-best-168-epoch-exp.ckpt
@@ -176,10 +184,10 @@ if __name__ == "__main__":
     # Path to the base (Theta 0) model
     #base_model_path = 'path/to/initial_hubert_base_model.ckpt' ## missing this part..........
     # Path to save the combined model
-    save_path = 'result/pretrain/task_vector_dhubert_ls_100_and_mert_ls_960_both_init_hubert_both_same_seed/learning_by_addition.ckpt'
+    save_path = f'result/pretrain/task_vector_dhubert_ls_100_weight_{args.lambda1}_and_mert_ls_960_weight_{args.lambda2}_both_init_hubert_both_same_seed/learning_by_addition.ckpt'
     directory = os.path.dirname(save_path)
     if not os.path.exists(directory):
         os.makedirs(directory)
         print(f"Created directory: {directory}")
     # Run task arithmetic
-    task_arithmetic(model_paths, save_path)
+    task_arithmetic(args, model_paths, save_path)
