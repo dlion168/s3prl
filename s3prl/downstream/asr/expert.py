@@ -16,6 +16,32 @@ from ..model import *
 from .dataset import SequenceDataset
 from .dictionary import Dictionary
 
+def compute_metrics(pred_tokens_all, pred_words_all, target_tokens_all, target_words_all
+    ):
+        """Computes WER and UER given the prediction and true transcriptions"""
+        unit_error_sum = 0.0
+        word_error_sum = 0.0
+        unit_length_sum = 0
+        word_length_sum = 0
+
+        for pred_tokens, pred_words, target_tokens, target_words in zip(
+            pred_tokens_all, pred_words_all, target_tokens_all, target_words_all
+        ):
+            pred_tokens = pred_tokens.split()
+            target_tokens = target_tokens.split()
+            unit_error_sum += editdistance.eval(pred_tokens, target_tokens)
+            unit_length_sum += len(target_tokens)
+
+            word_error_sum += editdistance.eval(pred_words, target_words)
+            word_length_sum += len(target_words)
+
+        uer, wer = 100.0, 100.0
+        if unit_length_sum > 0:
+            uer = 100.0 * unit_error_sum / unit_length_sum
+        if word_length_sum > 0:
+            wer = 100.0 * word_error_sum / word_length_sum
+
+        return uer, wer
 
 def token_to_word(text):
     # Hard coding but it is only used here for now.

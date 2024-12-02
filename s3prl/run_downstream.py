@@ -99,6 +99,7 @@ def get_downstream_args():
     args = parser.parse_args()
     backup_files = []
 
+    print(f"args: {args}")
     if args.expdir is None:
         args.expdir = f'result/downstream/{args.expname}'
     
