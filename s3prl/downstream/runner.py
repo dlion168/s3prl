@@ -666,6 +666,19 @@ class Runner():
 
 
         acc = torch.FloatTensor(records["acc"]).mean().item() *100
+        if self.args.downstream == "asr":
+            from s3prl.downstream.asr.expert import compute_metrics
+            if split == "test-clean":
+                _, wer = compute_metrics(
+                records["pred_tokens"],
+                records["pred_words"],
+                records["target_tokens"],
+                records["target_words"],
+                )
+            
+            acc = wer
+            
+
         if self.args.update_results and not_during_training:
             print(f"updating results!.")
             update_currently_running_experiments(self.args, self.worksheet, acc=acc)
