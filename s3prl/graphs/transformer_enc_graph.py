@@ -245,6 +245,7 @@ def hubert(model, merge_type='ff+attn', qk=False, classifier=False):
         'conv': 'feature_extractor.conv_layers',
         'proj': 'post_extract_proj',
         'emb_ln': 'feature_projection.layer_norm',
+        'pos_conv': 'encoder.pos_conv',  # Positional convolution embedding
         'q': 'encoder.layers.self_attn.q_proj',
         'k': 'encoder.layers.self_attn.k_proj',
         'v': 'encoder.layers.self_attn.v_proj',
@@ -257,7 +258,7 @@ def hubert(model, merge_type='ff+attn', qk=False, classifier=False):
     return TransformerEncoderGraph(model, 
                                    modules,
                                    layer_name='encoder.layers',
-                                   enc_prefix='hubert',
+                                   enc_prefix='encoder',
                                    merge_type=merge_type,
                                    num_layers=12,
                                    num_heads=12,
@@ -270,6 +271,7 @@ def mert(model, merge_type='ff+attn', qk=False, classifier=False):
         'conv': 'feature_extractor.conv_layers',
         'proj': 'feature_projection.projection',
         'emb_ln': 'feature_projection.layer_norm',
+        'pos_conv': 'encoder.pos_conv',  # Positional convolution embedding
         'q': 'encoder.layers.attention.q_proj',
         'k': 'encoder.layers.attention.k_proj',
         'v': 'encoder.layers.attention.v_proj',

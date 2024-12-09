@@ -666,9 +666,9 @@ class Runner():
 
 
         acc = torch.FloatTensor(records["acc"]).mean().item() *100
-        if self.args.downstream == "asr":
+        if self.args.downstream == "asr" and not_during_training:
             from s3prl.downstream.asr.expert import compute_metrics
-            if split == "test-clean":
+            if split == "test-clean" and not_during_training:
                 _, wer = compute_metrics(
                 records["pred_tokens"],
                 records["pred_words"],
