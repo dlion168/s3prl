@@ -6,7 +6,7 @@ from pathlib import Path
 
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.utils.data import DataLoader, DistributedSampler
+from torch.utils.data import DataLoader, DistributedSampler, Subset
 from torch.distributed import is_initialized
 from torch.nn.utils.rnn import pad_sequence
 
@@ -15,35 +15,17 @@ import numpy as np
 import warnings
 import pickle as pk
 from sklearn.metrics import classification_report
+from collections import defaultdict
 
 from .dataset import prepare_datasets, collate_fn_padd
 
-# Suppress warnings for cleaner log outputs
 warnings.filterwarnings("ignore")
 
-# ======
-# 損失函數
-# ======
-
 def class_balanced_softmax_cross_entropy_with_softtarget(logits, targets, weights, reduction='mean'):
-    """
-    使用 class-balanced 權重的 soft cross entropy 損失計算。
-
-    Args:
-        logits (Tensor): 預測結果 (batch_size, num_classes)
-        targets (Tensor): 標籤的 soft one-hot 向量 (batch_size, num_classes)
-        weights (Tensor): 每個類別的權重 (num_classes)
-        reduction (str): 損失縮減方式，可為 'mean', 'sum', 'none'
-
-    Returns:
-        Tensor: 計算後的損失值
-    """
     weights = weights.unsqueeze(0).repeat(targets.shape[0], 1) * targets
     weights = weights.sum(dim=1, keepdim=True).repeat(1, targets.shape[1])
-
     log_probs = F.log_softmax(logits, dim=1)
     batch_loss = -torch.sum(weights * targets * log_probs, dim=1)
-
     if reduction == 'none':
         return batch_loss
     elif reduction == 'mean':
@@ -53,56 +35,82 @@ def class_balanced_softmax_cross_entropy_with_softtarget(logits, targets, weight
     else:
         raise NotImplementedError('Unsupported reduction mode.')
 
-# ======
-# 梯度反轉層 (對抗式學習)
-# ======
-
-class GradientReversalFunction(torch.autograd.Function):
+class WeightedDataset(torch.utils.data.Dataset):
     """
-    梯度反轉 (Gradient Reversal Layer, GRL)
-
-    用於對抗式訓練中，將梯度的方向反轉，讓特徵提取器不能輕易預測某些敏感屬性 (例如性別)。
+    A wrapper dataset that returns sample weights along with original data.
     """
-    @staticmethod
-    def forward(ctx, x, alpha):
-        ctx.alpha = alpha
-        return x.view_as(x)
 
-    @staticmethod
-    def backward(ctx, grad_output):
-        return grad_output.neg() * ctx.alpha, None
+    def __init__(self, base_dataset, weight_dict):
+        self.base_dataset = base_dataset
+        self.weight_dict = weight_dict
 
-class GradientReversal(nn.Module):
+    def __len__(self):
+        return len(self.base_dataset)
+
+    def __getitem__(self, idx):
+        item = self.base_dataset[idx]
+        weight = self.weight_dict[idx]
+        return (*item, weight)
+
+def collate_fn_padd(batch):
     """
-    梯度反轉層模組。
+    Modified collate_fn to handle optional weight.
+    If weight is present, batch items will have 5 elements.
     """
-    def __init__(self, alpha=1.0):
-        super(GradientReversal, self).__init__()
-        self.alpha = alpha
-
-    def forward(self, x):
-        return GradientReversalFunction.apply(x, self.alpha)
-
+    has_weight = (len(batch[0]) == 5)
+    if has_weight:
+        total_wav = []
+        total_lab = []
+        total_utt = []
+        total_gender = []
+        total_weight = []
+        for wav, lab, utt, gender, w in batch:
+            total_wav.append(torch.Tensor(wav))
+            total_lab.append(lab)
+            total_utt.append(utt)
+            total_gender.append(gender)
+            total_weight.append(w)
+        total_lab = torch.Tensor(np.asarray(total_lab))
+        total_gender = torch.Tensor(total_gender).long()
+        total_weight = torch.Tensor(total_weight)
+        return total_wav, total_lab, total_utt, total_gender, total_weight
+    else:
+        total_wav = []
+        total_lab = []
+        total_utt = []
+        total_gender = []
+        for wav, lab, utt, gender in batch:
+            total_wav.append(torch.Tensor(wav))
+            total_lab.append(lab)
+            total_utt.append(utt)
+            total_gender.append(gender)
+        total_lab = torch.Tensor(np.asarray(total_lab))
+        total_gender = torch.Tensor(total_gender).long()
+        return total_wav, total_lab, total_utt, total_gender
 
 class DownstreamExpert(nn.Module):
     """
-    使用對抗式訓練的情緒識別模型。
+    training_mode (merged):
+    - "ERM": Just ERM
+    - "GroupDRO": Group Distributionally Robust Optimization
+    - "DS": Downsampling debiasing
+    - "RW": Reweighting debiasing
 
-    此模型同時學習情緒分類與對抗性地阻止模型從特徵中預測性別。
+    We remove macro-f1 and acc recording in forward.
+    We'll compute macro-f1 and acc in log_records.
     """
 
     def __init__(self, upstream_dim, downstream_expert, expdir, **kwargs):
         super(DownstreamExpert, self).__init__()
-        
-        # 輸入維度與設定
         self.upstream_dim = upstream_dim
         self.datarc = downstream_expert['datarc']
         self.modelrc = downstream_expert['modelrc']
+        self.training_mode = self.modelrc.get('training_mode', 'ERM')  
+        # Possible values: "ERM", "GroupDRO", "DS", "RW"
 
         self.fold = self.datarc.get('test_fold') or kwargs.get("downstream_variant")
         print(f"[Expert] - Using testing fold: \"{self.fold}\".")
 
-        # 建立資料路徑
         self.audio_path = os.path.join(self.datarc['root'], self.datarc['corpus'], "Audios")
         self.labels_path = os.path.join(self.datarc['root'], self.datarc['corpus'],
                                         self.datarc['p_or_s'], 
@@ -116,52 +124,69 @@ class DownstreamExpert(nn.Module):
          self.k_thresold, 
          self.all_emotions) = prepare_datasets(self.datarc, self.config_path)
         
-        # 載入模型設定
         with open(self.config_path, 'r') as f:
             self.config = json.load(f)
 
         model_cls = eval(self.modelrc['select'])
         model_conf = self.modelrc.get(self.modelrc['select'], {})
 
-        # 前置投影層
         self.projector = nn.Linear(upstream_dim, self.modelrc['projector_dim'])
-
-        # 主模型 (情緒預測)
         self.model = model_cls(
             input_dim=self.modelrc['projector_dim'],
             output_dim=len(self.config['categorical']["emo_type"]),
             **model_conf,
         )
 
-        # 損失函數 (情緒)
         self.objective = class_balanced_softmax_cross_entropy_with_softtarget
-        self.num_adversarial_layers = self.modelrc.get('num_adversarial_layers', 1)
-        self.lambda_diff = self.modelrc.get('lambda_diff', 0.0)  # λ_diff hyperparameter
-        self.lambda_adv = self.modelrc.get('lambda_adv', 0.1) 
-        # 對抗式性別分類器 (使用2層線性層)
-        self.grl = GradientReversal(alpha=1.0)
-        self.adv_encoders = nn.ModuleList()
-        for _ in range(self.num_adversarial_layers):
-            encoder = nn.Sequential(
-                nn.Linear(self.modelrc['projector_dim'], self.modelrc['projector_dim'] // 2)
-            )
-            self.adv_encoders.append(encoder)
-        self.adv_classifiers = nn.ModuleList()
-        for _ in range(self.num_adversarial_layers):
-            classifier = nn.Sequential(
-                nn.ReLU(),
-                nn.Linear(self.modelrc['projector_dim'] // 2, 2)
-            )
-            self.adv_classifiers.append(classifier)
-
-        self.gender_criterion = nn.CrossEntropyLoss()
-
         self.expdir = expdir
-        self.register_buffer('best_score', torch.ones(1) * 99999)
+        self.register_buffer('best_score', torch.ones(1)*99999)
 
+        # If DS or RW is chosen, apply debiasing on the training dataset
+        if self.training_mode in ["DS", "RW"]:
+            self.apply_debiasing(self.training_mode)
 
     def get_downstream_name(self):
         return self.fold.replace('fold', 'emotion')
+
+    def apply_debiasing(self, method):
+        class_gender_pairs = []
+        for idx in range(len(self.train_dataset)):
+            wav, lab, utt, gender = self.train_dataset[idx]
+            class_idx = np.argmax(lab)
+            class_gender_pairs.append((class_idx, gender, idx))
+
+        from collections import defaultdict
+        counts = defaultdict(int)
+        for (c, g, i) in class_gender_pairs:
+            counts[(c,g)] += 1
+
+        if method == "DS":
+            # Downsampling
+            if len(counts) == 0:
+                return
+            min_count = min(counts.values())
+            group_samples = defaultdict(list)
+            for (c,g,i) in class_gender_pairs:
+                group_samples[(c,g)].append(i)
+            new_indices = []
+            for (c,g), idx_list in group_samples.items():
+                random.shuffle(idx_list)
+                chosen = idx_list[:min_count]
+                new_indices.extend(chosen)
+            self.train_dataset = Subset(self.train_dataset, new_indices)
+            print(f"[DS] Downsampled training set to {len(new_indices)} samples.")
+
+        elif method == "RW":
+            # Reweighting
+            if len(counts) == 0:
+                return
+            weights_map = {k:1.0/v for k,v in counts.items()}
+            weight_dict = {}
+            for (c,g,i) in class_gender_pairs:
+                weight_dict[i] = weights_map[(c,g)]
+            from . import WeightedDataset  # If needed, or define WeightedDataset above
+            self.train_dataset = WeightedDataset(self.train_dataset, weight_dict)
+            print("[RW] Assigned reweighting to training samples.")
 
     def _get_train_dataloader(self, dataset):
         sampler = DistributedSampler(dataset) if is_initialized() else None
@@ -171,7 +196,7 @@ class DownstreamExpert(nn.Module):
             shuffle=(sampler is None),
             sampler=sampler,
             num_workers=self.datarc['num_workers'],
-            collate_fn=self._collate_wrapper
+            collate_fn=collate_fn_padd
         )
 
     def _get_eval_dataloader(self, dataset):
@@ -180,7 +205,7 @@ class DownstreamExpert(nn.Module):
             batch_size=self.datarc['eval_batch_size'],
             shuffle=False,
             num_workers=self.datarc['num_workers'],
-            collate_fn=self._collate_wrapper
+            collate_fn=collate_fn_padd
         )
 
     def get_train_dataloader(self):
@@ -195,98 +220,45 @@ class DownstreamExpert(nn.Module):
     def get_dataloader(self, mode):
         return getattr(self, f'get_{mode}_dataloader')()
 
-    def _collate_wrapper(self, batch):
-        total_wav, total_lab, total_utt, total_gender = collate_fn_padd(batch)
-        return total_wav, total_lab, total_utt, total_gender
-
-    def forward(self, mode, features, labels, filenames, records, gender_labels=None, **kwargs):
-        """
-        前向傳播：
-        1. 使用模型預測情緒分佈
-        2. 使用梯度反轉層與性別分類器預測性別
-        3. 損失 = 情緒損失 + 對抗損失 * lambda
-
-        Args:
-            mode (str): 訓練模式 (train/dev/test)
-            features (list[Tensor]): 每個樣本的聲音特徵
-            labels (Tensor): 真實情緒標籤 (soft target)
-            filenames (list[str]): 該batch中樣本的檔名
-            records (dict): 紀錄各種統計與結果的字典
-            gender_labels (Tensor): 真實性別標籤 (若無則產生預設值)
-
-        Returns:
-            Tensor: 損失值
-        """
-
+    def forward(self, mode, features, labels, filenames, records, gender_labels=None, sample_weights=None, **kwargs):
         device = features[0].device
         features_len = torch.IntTensor([len(feat) for feat in features]).to(device)
-
-        # 將 variable-length features pad 並投影
-        padded_features = pad_sequence(features, batch_first=True)
+        padded_features = pad_sequence(features, batch_first=True).to(device)
         projected_features = self.projector(padded_features)
-
-        # 預測情緒
         predicted_logits, hidden_states = self.model(projected_features, features_len)
         labels = labels.to(device)
-        emotion_loss = self.objective(predicted_logits, labels, self.class_balanced_weights.to(device), reduction='mean')
 
-        gender_labels = gender_labels.to(device)
-        
-        # Compute adversarial losses for each layer
-        # Only if valid labels are present
-        total_adv_loss = 0.0
-        collected_adv_features = []  # Will store h_A (adv_feature) for difference loss calculation
+        per_sample_loss = self.objective(predicted_logits, labels, self.class_balanced_weights.to(device), reduction='none')
 
-        for idx in range(self.num_adversarial_layers):
-            # Check if all are -1 (no valid labels)
-            if (gender_labels == -1).all():
-                # Skip if no valid labels
-                continue
+        # If RW is used, apply weights
+        if self.training_mode == "RW" and sample_weights is not None:
+            sample_weights = sample_weights.to(device)
+            per_sample_loss = per_sample_loss * sample_weights
+
+        if self.training_mode in ["ERM", "DS", "RW"]:
+            total_loss = per_sample_loss.mean()
+        elif self.training_mode == "GroupDRO":
+            gender_labels = gender_labels.to(device)
+            unique_genders = torch.unique(gender_labels)
+            loss_g_list = []
+            for g in unique_genders:
+                mask = (gender_labels == g)
+                if mask.sum() > 0:
+                    group_loss = per_sample_loss[mask].mean()
+                    loss_g_list.append((group_loss, g))
+            if len(loss_g_list) == 0:
+                total_loss = per_sample_loss.mean()
             else:
-                # Use only valid entries
-                valid_mask = (gender_labels != -1)
-                valid_features = projected_features[valid_mask]
-                valid_labels = gender_labels[valid_mask]
+                worst_L_g, worst_g = max(loss_g_list, key=lambda x: x[0])
+                total_loss = worst_L_g
+        else:
+            raise NotImplementedError(f"Unknown training mode: {self.training_mode}")
 
-                # Adversarial prediction
-                adv_features = torch.mean(valid_features, dim=1)
-                reversed_features = self.grl(adv_features)
-                adv_feature = self.adv_encoders[idx](reversed_features)
-                adv_pred = self.adv_classifiers[idx](adv_feature)
-                adv_loss = self.gender_criterion(adv_pred, valid_labels)
-                total_adv_loss += adv_loss
-                
-                collected_adv_features.append(adv_feature)
-        
-        difference_loss = 0.0
-        if self.lambda_diff > 0.0 and len(collected_adv_features) > 1:
-            # Suppose we have k adv_features: h_A_1, h_A_2, ..., h_A_k
-            # Each h_A_i is (N_i, D) dimension. For difference loss, we consider pairs i != j.
-            # We compute ||h_A_i^T h_A_j||_F^2
-            # First, we might want to ensure the same batch size or handle if different sets have different sizes.
-            # In this example, assume each adv_feature is computed on the same valid_mask, so N_i == N_j.
-            # If they differ, you need additional logic.
-            
-            # We'll just sum over all pairs (i,j), i!=j
-            for i in range(len(collected_adv_features)):
-                for j in range(i+1, len(collected_adv_features)):
-                    if i != j:
-                        # h_A_i: (N, D)
-                        # h_A_i^T h_A_j: (D, D)
-                        # Frobenius norm squared: sum of squared elements
-                        inter = collected_adv_features[i].t() @ collected_adv_features[j]
-                        difference_loss += inter.pow(2).sum()
-
-            difference_loss = self.lambda_diff * difference_loss
-
-        # 合併損失
-        total_loss = emotion_loss + self.adversarial_lambda / self.num_adversarial_layers * total_adv_loss + difference_loss
-
-        # 計算預測結果
+        # Compute binary predictions
         prediction_distribution = F.softmax(predicted_logits, dim=1)
         predictions_binary = torch.where(prediction_distribution > self.k_thresold, 1.0, 0.0)
         labels_binary = torch.where(labels > self.k_thresold, 1.0, 0.0)
-        
+
         if "all_predictions_binary" not in records:
             records["all_predictions_binary"] = []
             records["all_labels_binary"] = []
@@ -307,11 +279,11 @@ class DownstreamExpert(nn.Module):
         records["loss"].append(total_loss.item())
         records["filename"] += filenames
 
-        # 將預測結果及真實情緒寫入紀錄
+        # Convert predictions back to emo strings for logging
         all_emotions_np = np.array(self.all_emotions)
         for idx in range(len(labels_binary)):
-            true_emo = ";".join(all_emotions_np[np.where(labels_binary[idx].cpu().numpy(force=True) == 1.0)[0]])
-            pred_emo = ";".join(all_emotions_np[np.where(predictions_binary[idx].cpu().numpy(force=True) == 1.0)[0]])
+            true_emo = ";".join(all_emotions_np[np.where(labels_binary[idx].cpu().numpy(force=True)==1.0)[0]])
+            pred_emo = ";".join(all_emotions_np[np.where(predictions_binary[idx].cpu().numpy(force=True)==1.0)[0]])
             records["truth"].append(true_emo)
             records["predict"].append(pred_emo)
 

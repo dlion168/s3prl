@@ -14,36 +14,86 @@ import json
 import numpy as np
 import warnings
 import pickle as pk
+from sklearn.exceptions import ConvergenceWarning
 from sklearn.metrics import classification_report
 
 from .dataset import prepare_datasets, collate_fn_padd
 
-# Suppress warnings for cleaner log outputs
-warnings.filterwarnings("ignore")
+warnings.filterwarnings("ignore", category=ConvergenceWarning)
+warnings.filterwarnings("ignore", category=UserWarning)
 
-# ======
-# 損失函數
-# ======
+from typing import Dict
+import scipy
+from typing import List, Tuple
+from tqdm import tqdm
+import random
+import warnings
+
+# 匯入您提供的 get_debiasing_projection 和其他相關函式與類別
+from src.classifier import SKlearnClassifier
+from sklearn.linear_model import SGDClassifier
+
+def get_rowspace_projection(W: np.ndarray) -> np.ndarray:
+    if np.allclose(W, 0):
+        w_basis = np.zeros_like(W.T)
+    else:
+        w_basis = scipy.linalg.orth(W.T)
+    P_W = w_basis.dot(w_basis.T)
+    return P_W
+
+def get_projection_to_intersection_of_nullspaces(rowspace_projection_matrices: List[np.ndarray], input_dim: int):
+    I = np.eye(input_dim)
+    Q = np.sum(rowspace_projection_matrices, axis=0)
+    P = I - get_rowspace_projection(Q)
+    return P
+
+def get_debiasing_projection(classifier_class, cls_params: Dict, num_classifiers: int, input_dim: int,
+                             is_autoregressive: bool,
+                             min_accuracy: float, X_train: np.ndarray, Y_train: np.ndarray, X_dev: np.ndarray,
+                             Y_dev: np.ndarray, by_class=False, Y_train_main=None,
+                             Y_dev_main=None, dropout_rate = 0) -> Tuple[np.ndarray,List[np.ndarray],List[np.ndarray]]:
+    if dropout_rate > 0 and is_autoregressive:
+        warnings.warn("Note: when using dropout with autoregressive training, the property w_i.dot(w_(i+1)) = 0 no longer holds.")
+
+    I = np.eye(input_dim)
+
+    X_train_cp = X_train.copy()
+    X_dev_cp = X_dev.copy()
+    rowspace_projections = []
+    Ws = []
+
+    pbar = tqdm(range(num_classifiers))
+    for i in pbar:
+        clf = SKlearnClassifier(classifier_class(**cls_params))
+        dropout_scale = 1./(1 - dropout_rate + 1e-6)
+        dropout_mask = (np.random.rand(*X_train.shape) < (1-dropout_rate)).astype(float) * dropout_scale
+
+        relevant_idx_train = np.ones(X_train_cp.shape[0], dtype=bool)
+        relevant_idx_dev = np.ones(X_dev_cp.shape[0], dtype=bool)
+
+        acc = clf.train_network((X_train_cp * dropout_mask)[relevant_idx_train], Y_train[relevant_idx_train], X_dev_cp[relevant_idx_dev], Y_dev[relevant_idx_dev])
+        pbar.set_description("iteration: {}, accuracy: {}".format(i, acc))
+        if acc < min_accuracy: 
+            continue
+
+        W = clf.get_weights()
+        Ws.append(W)
+        P_rowspace_wi = get_rowspace_projection(W)
+        rowspace_projections.append(P_rowspace_wi)
+
+        if is_autoregressive:
+            P = get_projection_to_intersection_of_nullspaces(rowspace_projections, input_dim)
+            X_train_cp = (P.dot(X_train.T)).T
+            X_dev_cp = (P.dot(X_dev.T)).T
+
+    P = get_projection_to_intersection_of_nullspaces(rowspace_projections, input_dim)
+    return P, rowspace_projections, Ws
 
 def class_balanced_softmax_cross_entropy_with_softtarget(logits, targets, weights, reduction='mean'):
-    """
-    使用 class-balanced 權重的 soft cross entropy 損失計算。
-
-    Args:
-        logits (Tensor): 預測結果 (batch_size, num_classes)
-        targets (Tensor): 標籤的 soft one-hot 向量 (batch_size, num_classes)
-        weights (Tensor): 每個類別的權重 (num_classes)
-        reduction (str): 損失縮減方式，可為 'mean', 'sum', 'none'
-
-    Returns:
-        Tensor: 計算後的損失值
-    """
     weights = weights.unsqueeze(0).repeat(targets.shape[0], 1) * targets
     weights = weights.sum(dim=1, keepdim=True).repeat(1, targets.shape[1])
-
     log_probs = F.log_softmax(logits, dim=1)
     batch_loss = -torch.sum(weights * targets * log_probs, dim=1)
-
     if reduction == 'none':
         return batch_loss
     elif reduction == 'mean':
@@ -53,59 +103,25 @@ def class_balanced_softmax_cross_entropy_with_softtarget(logits, targets, weight
     else:
         raise NotImplementedError('Unsupported reduction mode.')
 
-# ======
-# 梯度反轉層 (對抗式學習)
-# ======
-
-class GradientReversalFunction(torch.autograd.Function):
-    """
-    梯度反轉 (Gradient Reversal Layer, GRL)
-
-    用於對抗式訓練中，將梯度的方向反轉，讓特徵提取器不能輕易預測某些敏感屬性 (例如性別)。
-    """
-    @staticmethod
-    def forward(ctx, x, alpha):
-        ctx.alpha = alpha
-        return x.view_as(x)
-
-    @staticmethod
-    def backward(ctx, grad_output):
-        return grad_output.neg() * ctx.alpha, None
-
-class GradientReversal(nn.Module):
-    """
-    梯度反轉層模組。
-    """
-    def __init__(self, alpha=1.0):
-        super(GradientReversal, self).__init__()
-        self.alpha = alpha
-
-    def forward(self, x):
-        return GradientReversalFunction.apply(x, self.alpha)
-
-
 class DownstreamExpert(nn.Module):
     """
-    使用對抗式訓練的情緒識別模型。
-
-    此模型同時學習情緒分類與對抗性地阻止模型從特徵中預測性別。
+    Implements Iterative Nullspace Projection (INLP) debias method.
+    Also computes performance metrics (macro-f1, acc) and fairness metrics at log_records.
     """
 
     def __init__(self, upstream_dim, downstream_expert, expdir, **kwargs):
         super(DownstreamExpert, self).__init__()
-        
-        # 輸入維度與設定
         self.upstream_dim = upstream_dim
         self.datarc = downstream_expert['datarc']
         self.modelrc = downstream_expert['modelrc']
+        self.inlp_rounds = self.modelrc.get('inlp_rounds', 10)
 
         self.fold = self.datarc.get('test_fold') or kwargs.get("downstream_variant")
         print(f"[Expert] - Using testing fold: \"{self.fold}\".")
 
-        # 建立資料路徑
         self.audio_path = os.path.join(self.datarc['root'], self.datarc['corpus'], "Audios")
         self.labels_path = os.path.join(self.datarc['root'], self.datarc['corpus'],
-                                        self.datarc['p_or_s'], 
+                                        self.datarc['p_or_s'],
                                         "labels_consensus_" + self.datarc['test_fold'].replace("fold", "") + ".csv")
         self.config_path = os.path.join(self.datarc['root'], self.datarc['corpus'], self.datarc['p_or_s'], "config.json")
 
@@ -115,50 +131,29 @@ class DownstreamExpert(nn.Module):
          self.class_balanced_weights, 
          self.k_thresold, 
          self.all_emotions) = prepare_datasets(self.datarc, self.config_path)
-        
-        # 載入模型設定
+
         with open(self.config_path, 'r') as f:
             self.config = json.load(f)
 
         model_cls = eval(self.modelrc['select'])
         model_conf = self.modelrc.get(self.modelrc['select'], {})
 
-        # 前置投影層
         self.projector = nn.Linear(upstream_dim, self.modelrc['projector_dim'])
-
-        # 主模型 (情緒預測)
         self.model = model_cls(
             input_dim=self.modelrc['projector_dim'],
             output_dim=len(self.config['categorical']["emo_type"]),
             **model_conf,
         )
 
-        # 損失函數 (情緒)
         self.objective = class_balanced_softmax_cross_entropy_with_softtarget
-        self.num_adversarial_layers = self.modelrc.get('num_adversarial_layers', 1)
-        self.lambda_diff = self.modelrc.get('lambda_diff', 0.0)  # λ_diff hyperparameter
-        self.lambda_adv = self.modelrc.get('lambda_adv', 0.1) 
-        # 對抗式性別分類器 (使用2層線性層)
-        self.grl = GradientReversal(alpha=1.0)
-        self.adv_encoders = nn.ModuleList()
-        for _ in range(self.num_adversarial_layers):
-            encoder = nn.Sequential(
-                nn.Linear(self.modelrc['projector_dim'], self.modelrc['projector_dim'] // 2)
-            )
-            self.adv_encoders.append(encoder)
-        self.adv_classifiers = nn.ModuleList()
-        for _ in range(self.num_adversarial_layers):
-            classifier = nn.Sequential(
-                nn.ReLU(),
-                nn.Linear(self.modelrc['projector_dim'] // 2, 2)
-            )
-            self.adv_classifiers.append(classifier)
-
-        self.gender_criterion = nn.CrossEntropyLoss()
-
         self.expdir = expdir
-        self.register_buffer('best_score', torch.ones(1) * 99999)
+        self.register_buffer('best_score', torch.ones(1)*99999)
 
+        print("[INLP] Computing nullspace projection matrix P.")
+        self.P = self.compute_inlp_projection()
+
+    def _collate_wrapper(self, batch):
+        return collate_fn_padd(batch)
 
     def get_downstream_name(self):
         return self.fold.replace('fold', 'emotion')
@@ -195,98 +190,66 @@ class DownstreamExpert(nn.Module):
     def get_dataloader(self, mode):
         return getattr(self, f'get_{mode}_dataloader')()
 
-    def _collate_wrapper(self, batch):
-        total_wav, total_lab, total_utt, total_gender = collate_fn_padd(batch)
-        return total_wav, total_lab, total_utt, total_gender
+    def compute_inlp_projection(self):
+        # 收集訓練集特徵與敏感標籤
+        train_loader = self.get_train_dataloader()
+        X_list = []
+        Z_list = []
+        device = self.projector.weight.device
+        with torch.no_grad():
+            for wav, lab, utt, gender in train_loader:
+                wav = [w.to(device) for w in wav]
+                features_len = torch.IntTensor([len(f) for f in wav]).to(device)
+                padded = pad_sequence(wav, batch_first=True)
+                proj = self.projector(padded)
+                proj_mean = proj.mean(dim=1).cpu().numpy()
+                X_list.append(proj_mean)
+                Z_list.append(gender.numpy())
+
+        X = np.concatenate(X_list, axis=0)
+        Z = np.concatenate(Z_list, axis=0)
+        _, D = X.shape
+
+        # 使用您提供的 get_debiasing_projection 函式來執行INLP
+        # 這裡將 X, Z 當作訓練和開發資料
+        # 在真實場景中，請準備獨立開發資料進行驗證
+        P, rowspace_projections, Ws = get_debiasing_projection(
+            classifier_class=SGDClassifier,
+            cls_params={},
+            num_classifiers=self.inlp_rounds,
+            input_dim=D,
+            is_autoregressive=True,
+            min_accuracy=0.0,
+            X_train=X,
+            Y_train=Z,
+            X_dev=X,
+            Y_dev=Z,
+            by_class=False
+        )
+
+        return torch.from_numpy(P).float().to(device)
 
     def forward(self, mode, features, labels, filenames, records, gender_labels=None, **kwargs):
-        """
-        前向傳播：
-        1. 使用模型預測情緒分佈
-        2. 使用梯度反轉層與性別分類器預測性別
-        3. 損失 = 情緒損失 + 對抗損失 * lambda
-
-        Args:
-            mode (str): 訓練模式 (train/dev/test)
-            features (list[Tensor]): 每個樣本的聲音特徵
-            labels (Tensor): 真實情緒標籤 (soft target)
-            filenames (list[str]): 該batch中樣本的檔名
-            records (dict): 紀錄各種統計與結果的字典
-            gender_labels (Tensor): 真實性別標籤 (若無則產生預設值)
-
-        Returns:
-            Tensor: 損失值
-        """
-
-        device = features[0].device
+        device = self.projector.weight.device
         features_len = torch.IntTensor([len(feat) for feat in features]).to(device)
-
-        # 將 variable-length features pad 並投影
-        padded_features = pad_sequence(features, batch_first=True)
+        padded_features = pad_sequence(features, batch_first=True).to(device)
         projected_features = self.projector(padded_features)
 
-        # 預測情緒
+        B, T, D = projected_features.shape
+        reshaped = projected_features.reshape(B*T, D)
+        reshaped = reshaped @ self.P.T
+        projected_features = reshaped.reshape(B, T, D)
+
         predicted_logits, hidden_states = self.model(projected_features, features_len)
         labels = labels.to(device)
-        emotion_loss = self.objective(predicted_logits, labels, self.class_balanced_weights.to(device), reduction='mean')
 
-        gender_labels = gender_labels.to(device)
-        
-        # Compute adversarial losses for each layer
-        # Only if valid labels are present
-        total_adv_loss = 0.0
-        collected_adv_features = []  # Will store h_A (adv_feature) for difference loss calculation
+        per_sample_loss = self.objective(predicted_logits, labels, self.class_balanced_weights.to(device), reduction='none')
+        total_loss = per_sample_loss.mean()
 
-        for idx in range(self.num_adversarial_layers):
-            # Check if all are -1 (no valid labels)
-            if (gender_labels == -1).all():
-                # Skip if no valid labels
-                continue
-            else:
-                # Use only valid entries
-                valid_mask = (gender_labels != -1)
-                valid_features = projected_features[valid_mask]
-                valid_labels = gender_labels[valid_mask]
-
-                # Adversarial prediction
-                adv_features = torch.mean(valid_features, dim=1)
-                reversed_features = self.grl(adv_features)
-                adv_feature = self.adv_encoders[idx](reversed_features)
-                adv_pred = self.adv_classifiers[idx](adv_feature)
-                adv_loss = self.gender_criterion(adv_pred, valid_labels)
-                total_adv_loss += adv_loss
-                
-                collected_adv_features.append(adv_feature)
-        
-        difference_loss = 0.0
-        if self.lambda_diff > 0.0 and len(collected_adv_features) > 1:
-            # Suppose we have k adv_features: h_A_1, h_A_2, ..., h_A_k
-            # Each h_A_i is (N_i, D) dimension. For difference loss, we consider pairs i != j.
-            # We compute ||h_A_i^T h_A_j||_F^2
-            # First, we might want to ensure the same batch size or handle if different sets have different sizes.
-            # In this example, assume each adv_feature is computed on the same valid_mask, so N_i == N_j.
-            # If they differ, you need additional logic.
-            
-            # We'll just sum over all pairs (i,j), i!=j
-            for i in range(len(collected_adv_features)):
-                for j in range(i+1, len(collected_adv_features)):
-                    if i != j:
-                        # h_A_i: (N, D)
-                        # h_A_i^T h_A_j: (D, D)
-                        # Frobenius norm squared: sum of squared elements
-                        inter = collected_adv_features[i].t() @ collected_adv_features[j]
-                        difference_loss += inter.pow(2).sum()
-
-            difference_loss = self.lambda_diff * difference_loss
-
-        # 合併損失
-        total_loss = emotion_loss + self.adversarial_lambda / self.num_adversarial_layers * total_adv_loss + difference_loss
-
-        # 計算預測結果
         prediction_distribution = F.softmax(predicted_logits, dim=1)
         predictions_binary = torch.where(prediction_distribution > self.k_thresold, 1.0, 0.0)
         labels_binary = torch.where(labels > self.k_thresold, 1.0, 0.0)
-        
+
         if "all_predictions_binary" not in records:
             records["all_predictions_binary"] = []
             records["all_labels_binary"] = []
@@ -294,7 +257,6 @@ class DownstreamExpert(nn.Module):
             records["filename"] = []
             records["predict"] = []
             records["truth"] = []
-            records["loss"] = []
 
         records["all_predictions_binary"].append(predictions_binary.cpu().numpy())
         records["all_labels_binary"].append(labels_binary.cpu().numpy())
@@ -303,30 +265,24 @@ class DownstreamExpert(nn.Module):
         else:
             records["all_genders"].append(np.zeros((len(labels_binary),), dtype=np.int64))
 
-        # Store loss for later averaging
-        records["loss"].append(total_loss.item())
         records["filename"] += filenames
 
-        # 將預測結果及真實情緒寫入紀錄
         all_emotions_np = np.array(self.all_emotions)
         for idx in range(len(labels_binary)):
-            true_emo = ";".join(all_emotions_np[np.where(labels_binary[idx].cpu().numpy(force=True) == 1.0)[0]])
-            pred_emo = ";".join(all_emotions_np[np.where(predictions_binary[idx].cpu().numpy(force=True) == 1.0)[0]])
+            true_emo = ";".join(all_emotions_np[np.where(labels_binary[idx].cpu().numpy(force=True)==1.0)[0]])
+            pred_emo = ";".join(all_emotions_np[np.where(predictions_binary[idx].cpu().numpy(force=True)==1.0)[0]])
             records["truth"].append(true_emo)
             records["predict"].append(pred_emo)
 
         return total_loss
 
     def log_records(self, mode, records, logger, global_step, **kwargs):
-        # Compute macro-f1 and acc here
-        all_preds = np.concatenate(records["all_predictions_binary"], axis=0)  # (N, C)
-        all_labels = np.concatenate(records["all_labels_binary"], axis=0)       # (N, C)
-
-        # macro-f1 from classification_report
+        save_names = []
+        all_preds = np.concatenate(records["all_predictions_binary"], axis=0)
+        all_labels = np.concatenate(records["all_labels_binary"], axis=0)
         reprot_dict = classification_report(all_labels, all_preds, target_names=self.all_emotions, output_dict=True)
         macro_f1 = reprot_dict['macro avg']['f1-score']
 
-        # acc by one-vs-all accuracy
         N, C = all_labels.shape
         acc_list = []
         for c in range(C):
@@ -336,21 +292,22 @@ class DownstreamExpert(nn.Module):
             FP = np.sum((pred_c == 1) & (label_c == 0))
             FN = np.sum((pred_c == 0) & (label_c == 1))
             TN = np.sum((pred_c == 0) & (label_c == 0))
-            accuracy_c = (TP + TN) / (TP + TN + FP + FN)
+            denom = (TP + TN + FP + FN)
+            accuracy_c = (TP + TN) / denom if denom>0 else 0
             acc_list.append(accuracy_c)
         acc = np.mean(acc_list) if len(acc_list) > 0 else 0.0
 
-        # Average loss
-        average_loss = torch.FloatTensor(records['loss']).mean().item()
+        if 'loss' in records:
+            average_loss = torch.FloatTensor(records['loss']).mean().item()
+        else:
+            average_loss = 0.0
 
-        # Log macro-f1, loss, acc
         metrics_to_log = {
             'macro-f1': macro_f1,
             'acc': acc,
             'loss': average_loss
         }
 
-        save_names = []
         for key, val in metrics_to_log.items():
             logger.add_scalar(f'emotion-{self.fold}/{mode}-{key}', val, global_step=global_step)
             with open(Path(self.expdir) / "log.log", 'a') as f:
@@ -363,7 +320,7 @@ class DownstreamExpert(nn.Module):
                 save_names.append(f'{mode}-best.ckpt')
 
         if mode in ["dev", "test"]:
-            all_genders = np.concatenate(records["all_genders"], axis=0)            # (N,)
+            all_genders = np.concatenate(records["all_genders"], axis=0)
 
             def safe_div(a, b):
                 return a / b if b > 0 else 0.0
@@ -414,25 +371,25 @@ class DownstreamExpert(nn.Module):
                 diff = values - mean_val
                 return math.sqrt(np.mean(diff**2))
 
-            rms_tpr = rms_gap(TPR_list)
-            rms_fpr = rms_gap(FPR_list)
-            rms_f1 = rms_gap(F1_list)
-            rms_dp = rms_gap(DP_disparities)
+            rms_tpr_gap = rms_gap(TPR_list)
+            rms_fpr_gap = rms_gap(FPR_list)
+            rms_f1_gap = rms_gap(F1_list)
+            rms_dp_gap = rms_gap(DP_disparities)
 
-            max_tpr = max(TPR_list) if TPR_list else 0.0
-            max_fpr = max(FPR_list) if FPR_list else 0.0
-            max_f1 = max(F1_list) if F1_list else 0.0
-            max_dp = max(DP_disparities) if DP_disparities else 0.0
+            max_tpr_gap = np.max(TPR_list) - np.min(TPR_list) if len(TPR_list)>1 else 0.0
+            max_fpr_gap = np.max(FPR_list) - np.min(FPR_list) if len(FPR_list)>1 else 0.0
+            max_f1_gap = np.max(F1_list) - np.min(F1_list) if len(F1_list)>1 else 0.0
+            max_dp_gap = np.max(DP_disparities) if len(DP_disparities)>0 else 0.0
 
             with open(Path(self.expdir) / "log.log", 'a') as f:
-                print(f"{mode} TPR RMS disparity: {rms_tpr}, max disparity: {max_tpr}")
-                f.write(f"{mode} TPR RMS disparity: {rms_tpr}, max disparity: {max_tpr}\n")
-                print(f"{mode} FPR RMS disparity: {rms_fpr}, max disparity: {max_fpr}")
-                f.write(f"{mode} FPR RMS disparity: {rms_fpr}, max disparity: {max_fpr}\n")
-                print(f"{mode} F1 RMS disparity: {rms_f1}, max disparity: {max_f1}")
-                f.write(f"{mode} F1 RMS disparity: {rms_f1}, max disparity: {max_f1}\n")
-                print(f"{mode} DP RMS disparity: {rms_dp}, max disparity: {max_dp}")
-                f.write(f"{mode} DP RMS disparity: {rms_dp}, max disparity: {max_dp}\n")
+                print(f"{mode} TPR RMS gap: {rms_tpr_gap}, max gap: {max_tpr_gap}")
+                f.write(f"{mode} TPR RMS gap: {rms_tpr_gap}, max gap: {max_tpr_gap}\n")
+                print(f"{mode} FPR RMS gap: {rms_fpr_gap}, max gap: {max_fpr_gap}")
+                f.write(f"{mode} FPR RMS gap: {rms_fpr_gap}, max gap: {max_fpr_gap}\n")
+                print(f"{mode} F1 RMS gap: {rms_f1_gap}, max gap: {max_f1_gap}")
+                f.write(f"{mode} F1 RMS gap: {rms_f1_gap}, max gap: {max_f1_gap}\n")
+                print(f"{mode} DP RMS disparity: {rms_dp_gap}, max disparity: {max_dp_gap}")
+                f.write(f"{mode} DP RMS disparity: {rms_dp_gap}, max disparity: {max_dp_gap}\n")
 
             with open(Path(self.expdir) / f"{mode}_{self.fold}_predict.txt", "w") as file:
                 lines = [f"{fname} {pred}\n" for fname, pred in zip(records["filename"], records["predict"])]
