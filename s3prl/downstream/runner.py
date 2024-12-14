@@ -128,7 +128,7 @@ def update_logfiles_experiments(args, sheet):
     num_values_cols = 25  # Number of columns to fetch/update including new ones
     running_where = determine_cluster()
     
-    task_to_column = { 'asr': 4, 'pr': 5, 'sf-cer': 6, 'asv': 7, 'sd': 8, 'speech_commands': 9, 'fluent_commands': 10, 'sf-f1': 11, 'sid': 12, 'er': 13, 'vocalset_singer_id': 14, 'vocalset_technique_id': 15, 'instrument_nsynth': 16, 'pitch_nsynth': 17, 'aec_esc50': 18,
+    task_to_column = { 'asr': 4, 'pr': 5, 'sf-cer': 6, 'asv': 7, 'sd': 8, 'speech_commands': 9, 'fluent_commands': 10, 'sf-f1': 11, 'voxceleb1': 12, 'emotion': 13, 'vocalset_singer_id': 14, 'vocalset_technique_id': 15, 'instrument_nsynth': 16, 'pitch_nsynth': 17, 'aec_esc50': 18,
                         'mer-mtg pr': 19, 'genre-mtg roc': 20, 'genre-mtg pr': 21, 'inst-mtg roc': 22,
                         'inst-mtg pr': 23, 'mt-mtg roc': 24, 'mt-mtg pr': 25 }
 
@@ -182,7 +182,7 @@ def update_currently_running_experiments(args, sheet, acc=None):
     base_start_col = 1
     num_values_cols = 25  # Number of columns to fetch/update including new ones
     
-    task_to_column = { 'asr': 4, 'pr': 5, 'sf-cer': 6, 'asv': 7, 'sd': 8, 'speech_commands': 9, 'fluent_commands': 10, 'sf-f1': 11, 'sid': 12, 'er': 13, 'vocalset_singer_id': 14, 'vocalset_technique_id': 15, 'instrument_nsynth': 16, 'pitch_nsynth': 17, 'aec_esc50': 18,
+    task_to_column = { 'asr': 4, 'pr': 5, 'sf-cer': 6, 'asv': 7, 'sd': 8, 'speech_commands': 9, 'fluent_commands': 10, 'sf-f1': 11, 'vocxeleb1': 12, 'emotion': 13, 'vocalset_singer_id': 14, 'vocalset_technique_id': 15, 'instrument_nsynth': 16, 'pitch_nsynth': 17, 'aec_esc50': 18,
                         'mer-mtg pr': 19, 'genre-mtg roc': 20, 'genre-mtg pr': 21, 'inst-mtg roc': 22,
                         'inst-mtg pr': 23, 'mt-mtg roc': 24, 'mt-mtg pr': 25 }
 
@@ -666,6 +666,19 @@ class Runner():
 
 
         acc = torch.FloatTensor(records["acc"]).mean().item() *100
+        if self.args.downstream == "asr" and not_during_training:
+            from s3prl.downstream.asr.expert import compute_metrics
+            if split == "test-clean" and not_during_training:
+                _, wer = compute_metrics(
+                records["pred_tokens"],
+                records["pred_words"],
+                records["target_tokens"],
+                records["target_words"],
+                )
+            
+            acc = wer
+            
+
         if self.args.update_results and not_during_training:
             print(f"updating results!.")
             update_currently_running_experiments(self.args, self.worksheet, acc=acc)

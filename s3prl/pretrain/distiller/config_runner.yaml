@@ -1,6 +1,6 @@
 runner:
   n_epochs: -1
-  total_steps: 200000
+  total_steps: 300000
   gradient_clipping: 5.0
   gradient_accumulate_steps: 1
 
@@ -25,4 +25,10 @@ pretrain_expert:
     max_timestep: 0
     libri_root: /export/home2/fabian/corpus/LibriSpeech
     file_path: /export/home2/fabian/projects/multi_distiller/s3prl/s3prl/data/len_for_bucket
-    sets: ['train-clean-100']
+    sets: ['train-clean-100', 'train-clean-360', 'train-other-500']
+    devsets: ['dev-clean']
+    data_stats:    # Add new fields for mean and std
+      fbank_mean: [-8.202537669959721]
+      fbank_std: [4.238643955336016]
+      wav_mean:  [8.7623e-13]
+      wav_std:  [0.0608]

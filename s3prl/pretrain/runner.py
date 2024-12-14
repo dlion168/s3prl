@@ -19,6 +19,8 @@ import importlib
 from tqdm import tqdm
 from collections import defaultdict
 import yaml
+import time
+import json
 #-------------#
 import torch
 import torch.nn as nn
@@ -27,6 +29,11 @@ import numpy as np
 #-------------#
 from optimizers import get_optimizer, get_grouped_parameters
 from schedulers import get_scheduler
+
+def log_gpu_memory():
+    memory_allocated = torch.cuda.memory_allocated()
+    memory_reserved = torch.cuda.memory_reserved()
+    return memory_allocated, memory_reserved
 
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
@@ -77,8 +84,9 @@ def col_to_letter(col):
         col, remainder = divmod(col - 1, 26)
         result = chr(65 + remainder) + result
     return result
+    
 
-def update_currently_running_experiments(args,config, sheet, epoch=None, total_epochs=None):
+def update_currently_running_experiments(args,config, sheet, epoch=None, total_epochs=None, global_time_difference=None, average_epoch_times=None, average_epoch_std=None, avg_memory_allocated=None, std_memory_allocated=None):
     running_where = determine_cluster()
     upstream_config = yaml.load(open(args.upstream_config, "r"), Loader=yaml.FullLoader)
     upstream_parameters = upstream_config[args.upstream] # should be either distiller or multi_distiller , hopefully
@@ -92,7 +100,7 @@ def update_currently_running_experiments(args,config, sheet, epoch=None, total_e
     
     # Define the base starting column index ('A' -> 1)
     base_start_col = 1
-    num_values_cols = 16  # Number of columns to fetch/update including new ones
+    num_values_cols = 22  # Number of columns to fetch/update including new ones
     
     # Calculate the starting column for the current fold
     start_col_index = base_start_col
@@ -100,30 +108,105 @@ def update_currently_running_experiments(args,config, sheet, epoch=None, total_e
     
     start_col = col_to_letter(start_col_index)
     end_col = col_to_letter(end_col_index)
-    
     col_range = f'{start_col}{args.current_row}:{end_col}{args.current_row}'
-
+    # Fetch the existing row from the sheet
     current_general_stuff = sheet.get(col_range)
+    if not current_general_stuff or len(current_general_stuff) == 0:
+        current_general_stuff = [[]]  # Ensure there's at least an empty row structure
+
+    # Ensure the row has enough columns by padding with empty strings
+    while len(current_general_stuff[0]) < num_values_cols:
+        current_general_stuff[0].append("")
+
+    # GPU model information
+    gpu_model = torch.cuda.get_device_name()
+
+    # Prepare values to update
+    if args.upstream == "distiller":
+        values_general_stuff = [
+            args.expdir.split("/")[-1],  # Experiment directory
+            "DistilHub normal style",  # Style
+            "l1 + cos",  # Loss function
+            "",  # Placeholder for additional info
+            "hubert_base",  # Base model
+            "teacher model",  # Model type
+            "None",  # Translator type
+            config['optimizer']['name'],  # Optimizer
+            config['optimizer']['lr'],  # Learning rate
+            running_where,  # Cluster info
+            os.getenv('USER'),  # User
+            status,  # Current status
+            args.sheet_row,  # Row in the sheet
+            args.expdir,  # Experiment directory
+            args.logfile,  # Log file path
+            "",  # Placeholder
+            global_time_difference,  # Total training time
+            average_epoch_times,  # Average epoch time
+            average_epoch_std,  # Epoch time standard deviation
+            avg_memory_allocated,  # Avg GPU memory allocated
+            std_memory_allocated,  # GPU memory std deviation
+            gpu_model,  # GPU model
+        ]
+    else:
+        values_general_stuff = [
+            args.expdir.split("/")[-1],  # Experiment directory
+            "DistilHub normal style",  # Style
+            "l1 + cos",  # Loss function
+            "",  # Placeholder for additional info
+            upstream_parameters["teacher_names"][0],  # Teacher names
+            upstream_parameters["initialize_from"][0],  # Init model
+            upstream_parameters["translator_type"],  # Translator type
+            config['optimizer']['name'],  # Optimizer
+            config['optimizer']['lr'],  # Learning rate
+            running_where,  # Cluster info
+            os.getenv('USER'),  # User
+            status,  # Current status
+            args.sheet_row,  # Row in the sheet
+            args.expdir,  # Experiment directory
+            args.logfile,  # Log file path
+            "",  # Placeholder
+            global_time_difference,  # Total training time
+            average_epoch_times,  # Average epoch time
+            average_epoch_std,  # Epoch time standard deviation
+            avg_memory_allocated,  # Avg GPU memory allocated
+            std_memory_allocated,  # GPU memory std deviation
+            gpu_model,  # GPU model
+        ]
+
+    # Update the existing row with the new values
+    for i, value in enumerate(values_general_stuff):
+        if value is not None:
+            current_general_stuff[0][i] = value
+
+    # Update the sheet
+    print("Updating currently running experiment details...")
+    sheet.update(col_range, current_general_stuff)
 
     
-    print(f"upstream_parameters  ... {upstream_parameters}")
-    if not any(current_general_stuff):
-        # If the row is empty, add the initial values
-        if args.upstream == "distiller":
-            values_general_stuff = [[args.expdir.split("/")[-1], "DistilHub normal style", "l1 + cos", "", "hubert_base", "teacher model", "None", config['optimizer']['name'], config['optimizer']['lr']  ,running_where  ,os.getenv('USER'), status, args.sheet_row, args.expdir ,args.logfile, "" ]]
-        else:
-            values_general_stuff = [[args.expdir.split("/")[-1], "DistilHub normal style", "l1 + cos", "", upstream_parameters["teacher_names"][0], upstream_parameters["initialize_from"][0], upstream_parameters["translator_type"], config['optimizer']['name'], config['optimizer']['lr']  ,running_where  ,os.getenv('USER'), status, args.sheet_row, args.expdir ,args.logfile, "" ]]
-        print(f"Adding currently running experiment details")
-        sheet.update(col_range, values_general_stuff)
-    else:
-        if args.upstream == "distiller":
-            values_general_stuff = [[args.expdir.split("/")[-1], "DistilHub normal style", "l1 + cos", "", "hubert_base", "teacher model", "None", config['optimizer']['name'], config['optimizer']['lr']  ,running_where  ,os.getenv('USER'), status, args.sheet_row, args.expdir ,args.logfile, "" ]]
-        else:
-            values_general_stuff = [[args.expdir.split("/")[-1], "DistilHub normal style", "l1 + cos", "", upstream_parameters["teacher_names"][0], upstream_parameters["initialize_from"][0], upstream_parameters["translator_type"], config['optimizer']['name'], config['optimizer']['lr']  ,running_where  ,os.getenv('USER'), status, args.sheet_row, args.expdir ,args.logfile, "" ]]
-        # Update only the status column, keep other values unchanged
-        current_general_stuff[0][11] = status  # Assuming status is the 11th column (index 10)
-        print(f"Updating status to {status}")
-        sheet.update(col_range, current_general_stuff)
+    # print(f"upstream_parameters  ... {upstream_parameters}")
+    # if not any(current_general_stuff):
+    #     # If the row is empty, add the initial values
+    #     if args.upstream == "distiller":
+    #         values_general_stuff = [[args.expdir.split("/")[-1], "DistilHub normal style", "l1 + cos", "", "hubert_base", "teacher model", "None", config['optimizer']['name'], config['optimizer']['lr']  ,running_where  ,os.getenv('USER'), status, args.sheet_row, args.expdir ,args.logfile, "" ]]
+    #     else:
+    #         values_general_stuff = [[args.expdir.split("/")[-1], "DistilHub normal style", "l1 + cos", "", upstream_parameters["teacher_names"][0], upstream_parameters["initialize_from"][0], upstream_parameters["translator_type"], config['optimizer']['name'], config['optimizer']['lr']  ,running_where  ,os.getenv('USER'), status, args.sheet_row, args.expdir ,args.logfile, "" ]]
+    #     print(f"Adding currently running experiment details")
+    #     sheet.update(col_range, values_general_stuff)
+    # else:
+    #     if args.upstream == "distiller":
+    #         values_general_stuff = [[args.expdir.split("/")[-1], "DistilHub normal style", "l1 + cos", "", "hubert_base", "teacher model", "None", config['optimizer']['name'], config['optimizer']['lr']  ,running_where  ,os.getenv('USER'), status, args.sheet_row, args.expdir ,args.logfile, "" ,global_time_difference, average_epoch_times, average_epoch_std, avg_memory_allocated, std_memory_allocated, gpu_model]]
+    #     else:
+    #         values_general_stuff = [[args.expdir.split("/")[-1], "DistilHub normal style", "l1 + cos", "", upstream_parameters["teacher_names"][0], upstream_parameters["initialize_from"][0], upstream_parameters["translator_type"], config['optimizer']['name'], config['optimizer']['lr']  ,running_where  ,os.getenv('USER'), status, args.sheet_row, args.expdir ,args.logfile, "" ,global_time_difference, average_epoch_times, average_epoch_std, avg_memory_allocated, std_memory_allocated,gpu_model]]
+    #     # Update only the status column, keep other values unchanged
+    #     current_general_stuff[0][11] = status  # Assuming status is the 11th column (index 10)
+    #     current_general_stuff[0][16] = global_time_difference
+    #     current_general_stuff[0][17] = average_epoch_times
+    #     current_general_stuff[0][18] = average_epoch_std
+    #     current_general_stuff[0][19] = avg_memory_allocated
+    #     current_general_stuff[0][20] = std_memory_allocated
+    #     current_general_stuff[0][21] = gpu_model
+    #     print(f"Updating status to {status}")
+    #     sheet.update(col_range, current_general_stuff)
 
 
 
@@ -189,6 +272,8 @@ class Runner():
     """
     def __init__(self, args, config):
         self.args = args
+        self.global_start_time = time.time()
+        self.global_end_time = 0
         self.config = config
         self.logger = SummaryWriter(args.expdir)                                                 
 
@@ -257,6 +342,7 @@ class Runner():
 
     def train(self):
         # set model train mode
+        epoch_times = []
         self.upstream.train()
 
         # prepare data
@@ -316,15 +402,19 @@ class Runner():
 
         # Initialize variable to track the lowest loss
         best_train_loss = float('inf')
-        epoch_train_loss = 0
 
-        if self.args.find_best_checkpoint:
-            print("[Runner] - Finding best checkpoint...")
-            self.find_best_checkpoint(dataloader, self.args, amp = amp)
-            return
+        # if self.args.find_best_checkpoint:
+        #     print("[Runner] - Finding best checkpoint...")
+        #     self.find_best_checkpoint(dataloader, self.args, amp = amp)
+        #     return
 
-
+        memory_logs = []
+        convergence_logs = []
+        
         while pbar.n < pbar.total:
+            epoch_start_time = time.time()
+            epoch_train_loss = 0
+
             for data in tqdm(dataloader, dynamic_ncols=True, desc='train'):
                 # try/except block for forward/backward
                 try:
@@ -348,7 +438,10 @@ class Runner():
                         scaler.scale(loss).backward()
                     else:
                         loss.backward()
-
+                    
+                    # Log GPU memory
+                    memory_allocated, memory_reserved = log_gpu_memory()
+                    memory_logs.append((memory_allocated, memory_reserved))
                 except RuntimeError as e:
                     if 'CUDA out of memory' in str(e):
                         print(f'[Runner] - CUDA out of memory at step {global_step}')
@@ -415,6 +508,8 @@ class Runner():
                     records = defaultdict(list)
                     # Saving model with the lowest loss
                     avg_epoch_loss = epoch_train_loss / len(dataloader)
+                    convergence_logs.append(avg_epoch_loss)
+
                     if avg_epoch_loss < best_train_loss:
                         best_train_loss = avg_epoch_loss  # Update best training loss
                         tqdm.write(f"[Runner] - New best training loss: {best_train_loss:.6f}, saving checkpoint...")
@@ -434,6 +529,7 @@ class Runner():
                         save_path = os.path.join(self.args.expdir, save_name)
                         torch.save(all_states, save_path)
                         tqdm.write(f'[Runner] - Checkpoint saved to: {save_path}')
+                
 
 
                 if global_step % self.config['runner']['save_step'] == 0 or pbar.n == pbar.total -1:
@@ -465,6 +561,77 @@ class Runner():
                 
                 all_loss = 0      
                 pbar.update(1)
-            update_currently_running_experiments(self.args, self.config, self.worksheet, pbar.n , pbar.total)
+            epoch_end_time = time.time()
+            epoch_times.append(epoch_end_time - epoch_start_time)
+            # Calculate stats for the current epoch
+            average_epoch_times = sum(epoch_times) / len(epoch_times)
+            squared_differences = [(x - average_epoch_times) ** 2 for x in epoch_times]
+            average_epoch_std = math.sqrt(sum(squared_differences) / len(epoch_times))
+            avg_memory_allocated = sum([log[0] for log in memory_logs]) / len(memory_logs)
+            std_memory_allocated = math.sqrt(
+                sum((log[0] - avg_memory_allocated) ** 2 for log in memory_logs) / len(memory_logs)
+            )
+            avg_memory_requested = sum([log[1] for log in memory_logs]) / len(memory_logs)
+            std_memory_requested = math.sqrt(
+                sum((log[1] - avg_memory_requested) ** 2 for log in memory_logs) / len(memory_logs)
+            )
 
+            # Prepare logs for the current epoch
+            epoch_log = {
+                "epoch": len(epoch_times),
+                "epoch_time": epoch_times[-1],
+                "average_epoch_time": average_epoch_times,
+                "epoch_time_std": average_epoch_std,
+                "average_memory_allocated_MB": avg_memory_allocated / 1e6,
+                "memory_std_MB": std_memory_allocated / 1e6,
+                "average_memory_requested_MB": avg_memory_requested / 1e6,
+                "memory_std_requested_MB": std_memory_requested / 1e6,
+                "best_train_loss": best_train_loss if 'best_train_loss' in locals() else None,
+                "convergence_logs": convergence_logs,
+            }
+            # Append to the JSON file
+            json_name = os.path.join(self.args.expdir, "training_logs.json")
+            if not os.path.exists(json_name):
+                # If the file does not exist, create it with an empty list structure
+                with open(json_name, "w") as f:
+                    json.dump({"epochs": []}, f, indent=4)
+
+            # Load, append, and save
+            with open(json_name, "r") as f:
+                existing_logs = json.load(f)
+
+            existing_logs["epochs"].append(epoch_log)
+
+            with open(json_name, "w") as f:
+                json.dump(existing_logs, f, indent=4)
+
+            print(f"Updated training logs for epoch {len(epoch_times)} in {json_name}")
+
+            update_currently_running_experiments(self.args, self.config, self.worksheet, pbar.n , pbar.total, 
+            average_epoch_times=average_epoch_times, 
+            average_epoch_std=average_epoch_std, 
+            avg_memory_allocated=avg_memory_allocated, 
+            std_memory_allocated=std_memory_allocated)
+        
+
+        average_epoch_times = sum(epoch_times) / len(epoch_times)
+        # Calculate standard deviation
+        squared_differences = [(x - average_epoch_times) ** 2 for x in epoch_times]
+        average_epoch_std = math.sqrt(sum(squared_differences) / len(epoch_times))
+        ### here I will send the info of times and std and others to the excell sheet where i am adding more columns.
+        avg_memory_allocated = sum([log[0] for log in memory_logs]) / len(memory_logs)
+        # Calculate standard deviations
+        std_memory_allocated = math.sqrt(
+            sum((log[0] - avg_memory_allocated) ** 2 for log in memory_logs) / len(memory_logs)
+        )
+
+        self.global_end_time = time.time()
+        global_time_difference = self.global_end_time - self.global_start_time
+
+        print(f"Total Training Time (Global): {global_time_difference:.2f} seconds")
+        print(f"Average GPU Memory Allocated: {avg_memory_allocated / 1e6:.2f} MB (Std: {std_memory_allocated / 1e6:.2f} MB)")
+        print(f"Average Epoch Time: {average_epoch_times:.2f}s")
+        print(f"Epoch Time Standard Deviation: {average_epoch_std:.2f}s")
+        
+        update_currently_running_experiments(self.args, self.config, self.worksheet, pbar.n , pbar.total, global_time_difference, average_epoch_times, average_epoch_std, avg_memory_allocated, std_memory_allocated)
         pbar.close()

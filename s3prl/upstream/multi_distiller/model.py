@@ -68,6 +68,7 @@ class MultiDistillerConfig:
         self.loss_type = str(config.get("loss_type", "l1"))
         self.feat_pen_loss = float(config.get("feat_pen_loss", 0.0))
         self.cosine_loss = float(config.get("cosine_loss", 0.0))
+        self.use_feat_translator = True # config.get('use_feat_translator', False)
 
         # When task_emb_type == 'expand-last' only
         self.pred_layer_id = list(
@@ -82,10 +83,10 @@ class MultiDistillerConfig:
             config.get("init_teacher_encoder_layers", False)
         )
 
-        self.teacher_names = config.get('teacher_names')
-        self.translator_kwargs = config.get('translator_kwargs')
+        self.teacher_names = config.get('teacher_names',"hubert_base")
+        self.translator_kwargs = config.get('translator_kwargs', None)
         self.translator_type = config.get('translator_type')
-        self.initialize_from = config.get('initialize_from')
+        self.initialize_from = config.get('initialize_from',"hubert_base")
         
         # Handle data_stats, setting defaults if not provided
         
@@ -236,8 +237,19 @@ class MultiDistillerModel(nn.Module):
                 )
                 self.translator = None
             else: 
-                self.output_layers = nn.ModuleDict({
-                    teacher: nn.Sequential(
+                self.use_feat_translator = True
+                if not self.use_feat_translator:
+                    self.output_layers = nn.ModuleDict({
+                        teacher: nn.Sequential(
+                    nn.Linear(final_emb_size, inter_dim * self.n_tasks),
+                    nn.GELU(),
+                    SplitLinear(inter_dim, self.n_tasks, config.final_dim),
+                    )
+                    for teacher in self.teacher_names  # For each teacher model
+                })
+                else:
+                    self.output_layers = nn.ModuleDict({
+                        teacher: nn.Sequential(
                         nn.Linear(final_emb_size, inter_dim * self.n_tasks // 2),  # Linear projection for each teacher
                         nn.GELU(),  # Non-linear activation
                         # Conditionally add a more complex model for 'sasst_frame' teacher
@@ -251,14 +263,8 @@ class MultiDistillerModel(nn.Module):
                         nn.GELU(),
                         SplitLinear(inter_dim, self.n_tasks, config.final_dim)
                     )
-                # ) if teacher == 'ssast_frame' else nn.Sequential(
-                #     nn.Linear(final_emb_size, inter_dim * self.n_tasks),  # Simpler model for other teachers
-                #     nn.GELU(),
-                #     SplitLinear(inter_dim, self.n_tasks, config.final_dim)
-                # )
-            
-                for teacher in self.teacher_names  # For each teacher model
-                })
+                    for teacher in self.teacher_names  # For each teacher model
+                    })
                 
                 print(self.output_layers)
             
