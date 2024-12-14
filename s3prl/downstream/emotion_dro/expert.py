@@ -17,7 +17,8 @@ import pickle as pk
 from sklearn.metrics import classification_report
 from collections import defaultdict
 
-from .dataset import prepare_datasets, collate_fn_padd
+from .dataset import prepare_datasets, collate_fn_padd, WeightedDataset
+from ..model import *
 
 warnings.filterwarnings("ignore")
 
@@ -35,59 +36,6 @@ def class_balanced_softmax_cross_entropy_with_softtarget(logits, targets, weight
     else:
         raise NotImplementedError('Unsupported reduction mode.')
 
-class WeightedDataset(torch.utils.data.Dataset):
-    """
-    A wrapper dataset that returns sample weights along with original data.
-    """
-
-    def __init__(self, base_dataset, weight_dict):
-        self.base_dataset = base_dataset
-        self.weight_dict = weight_dict
-
-    def __len__(self):
-        return len(self.base_dataset)
-
-    def __getitem__(self, idx):
-        item = self.base_dataset[idx]
-        weight = self.weight_dict[idx]
-        return (*item, weight)
-
-def collate_fn_padd(batch):
-    """
-    Modified collate_fn to handle optional weight.
-    If weight is present, batch items will have 5 elements.
-    """
-    has_weight = (len(batch[0]) == 5)
-    if has_weight:
-        total_wav = []
-        total_lab = []
-        total_utt = []
-        total_gender = []
-        total_weight = []
-        for wav, lab, utt, gender, w in batch:
-            total_wav.append(torch.Tensor(wav))
-            total_lab.append(lab)
-            total_utt.append(utt)
-            total_gender.append(gender)
-            total_weight.append(w)
-        total_lab = torch.Tensor(np.asarray(total_lab))
-        total_gender = torch.Tensor(total_gender).long()
-        total_weight = torch.Tensor(total_weight)
-        return total_wav, total_lab, total_utt, total_gender, total_weight
-    else:
-        total_wav = []
-        total_lab = []
-        total_utt = []
-        total_gender = []
-        for wav, lab, utt, gender in batch:
-            total_wav.append(torch.Tensor(wav))
-            total_lab.append(lab)
-            total_utt.append(utt)
-            total_gender.append(gender)
-        total_lab = torch.Tensor(np.asarray(total_lab))
-        total_gender = torch.Tensor(total_gender).long()
-        return total_wav, total_lab, total_utt, total_gender
-
 class DownstreamExpert(nn.Module):
     """
     training_mode (merged):
@@ -95,9 +43,6 @@ class DownstreamExpert(nn.Module):
     - "GroupDRO": Group Distributionally Robust Optimization
     - "DS": Downsampling debiasing
     - "RW": Reweighting debiasing
-
-    We remove macro-f1 and acc recording in forward.
-    We'll compute macro-f1 and acc in log_records.
     """
 
     def __init__(self, upstream_dim, downstream_expert, expdir, **kwargs):
@@ -141,21 +86,25 @@ class DownstreamExpert(nn.Module):
         self.expdir = expdir
         self.register_buffer('best_score', torch.ones(1)*99999)
 
-        # If DS or RW is chosen, apply debiasing on the training dataset
-        if self.training_mode in ["DS", "RW"]:
-            self.apply_debiasing(self.training_mode)
+        # Apply debiasing if chosen
+        self.apply_debiasing(self.training_mode)
 
     def get_downstream_name(self):
         return self.fold.replace('fold', 'emotion')
 
     def apply_debiasing(self, method):
+        """
+        For DS (downsampling), we subset the dataset.
+        For RW (reweighting), we wrap the dataset with WeightedDataset using computed weights.
+        For ERM/GroupDRO, we also wrap with WeightedDataset, but assign equal weights=1.
+        """
+        # Collect group info
         class_gender_pairs = []
         for idx in range(len(self.train_dataset)):
             wav, lab, utt, gender = self.train_dataset[idx]
             class_idx = np.argmax(lab)
             class_gender_pairs.append((class_idx, gender, idx))
 
-        from collections import defaultdict
         counts = defaultdict(int)
         for (c, g, i) in class_gender_pairs:
             counts[(c,g)] += 1
@@ -163,6 +112,9 @@ class DownstreamExpert(nn.Module):
         if method == "DS":
             # Downsampling
             if len(counts) == 0:
+                # Just wrap with equal weights if empty
+                weight_dict = {i:1.0 for i in range(len(self.train_dataset))}
+                self.train_dataset = WeightedDataset(self.train_dataset, weight_dict)
                 return
             min_count = min(counts.values())
             group_samples = defaultdict(list)
@@ -174,19 +126,29 @@ class DownstreamExpert(nn.Module):
                 chosen = idx_list[:min_count]
                 new_indices.extend(chosen)
             self.train_dataset = Subset(self.train_dataset, new_indices)
+            # After downsampling, assign uniform weights=1
+            weight_dict = {i:1.0 for i in range(len(self.train_dataset))}
+            self.train_dataset = WeightedDataset(self.train_dataset, weight_dict)
             print(f"[DS] Downsampled training set to {len(new_indices)} samples.")
 
         elif method == "RW":
             # Reweighting
             if len(counts) == 0:
-                return
-            weights_map = {k:1.0/v for k,v in counts.items()}
-            weight_dict = {}
-            for (c,g,i) in class_gender_pairs:
-                weight_dict[i] = weights_map[(c,g)]
-            from . import WeightedDataset  # If needed, or define WeightedDataset above
+                # No groups, uniform weights
+                weight_dict = {i:1.0 for i in range(len(self.train_dataset))}
+            else:
+                weights_map = {k:1.0/v for k,v in counts.items()}
+                weight_dict = {}
+                for (c,g,i) in class_gender_pairs:
+                    weight_dict[i] = weights_map[(c,g)]
             self.train_dataset = WeightedDataset(self.train_dataset, weight_dict)
             print("[RW] Assigned reweighting to training samples.")
+        else:
+            # ERM or GroupDRO: just assign uniform weights=1
+            weight_dict = {i:1.0 for i in range(len(self.train_dataset))}
+            self.train_dataset = WeightedDataset(self.train_dataset, weight_dict)
+        self.dev_dataset = WeightedDataset(self.dev_dataset, weight_dict)
+        self.test_dataset = WeightedDataset(self.test_dataset, weight_dict)
 
     def _get_train_dataloader(self, dataset):
         sampler = DistributedSampler(dataset) if is_initialized() else None
@@ -220,20 +182,19 @@ class DownstreamExpert(nn.Module):
     def get_dataloader(self, mode):
         return getattr(self, f'get_{mode}_dataloader')()
 
-    def forward(self, mode, features, labels, filenames, records, gender_labels=None, sample_weights=None, **kwargs):
+    def forward(self, mode, features, labels, filenames, gender_labels, sample_weights, records, **kwargs):
         device = features[0].device
         features_len = torch.IntTensor([len(feat) for feat in features]).to(device)
         padded_features = pad_sequence(features, batch_first=True).to(device)
         projected_features = self.projector(padded_features)
         predicted_logits, hidden_states = self.model(projected_features, features_len)
         labels = labels.to(device)
+        sample_weights = sample_weights.to(device)
 
         per_sample_loss = self.objective(predicted_logits, labels, self.class_balanced_weights.to(device), reduction='none')
 
-        # If RW is used, apply weights
-        if self.training_mode == "RW" and sample_weights is not None:
-            sample_weights = sample_weights.to(device)
-            per_sample_loss = per_sample_loss * sample_weights
+        # Apply weights directly (uniform=1 for non-RW, or actual weights for RW)
+        per_sample_loss = per_sample_loss * sample_weights
 
         if self.training_mode in ["ERM", "DS", "RW"]:
             total_loss = per_sample_loss.mean()
@@ -308,7 +269,8 @@ class DownstreamExpert(nn.Module):
             FP = np.sum((pred_c == 1) & (label_c == 0))
             FN = np.sum((pred_c == 0) & (label_c == 1))
             TN = np.sum((pred_c == 0) & (label_c == 0))
-            accuracy_c = (TP + TN) / (TP + TN + FP + FN)
+            denom = (TP + TN + FP + FN)
+            accuracy_c = (TP + TN) / denom if denom > 0 else 0
             acc_list.append(accuracy_c)
         acc = np.mean(acc_list) if len(acc_list) > 0 else 0.0
 
@@ -335,38 +297,84 @@ class DownstreamExpert(nn.Module):
                 save_names.append(f'{mode}-best.ckpt')
 
         if mode in ["dev", "test"]:
-            all_genders = np.concatenate(records["all_genders"], axis=0)            # (N,)
+            all_genders = np.concatenate(records["all_genders"], axis=0)  # (N,)
 
             def safe_div(a, b):
                 return a / b if b > 0 else 0.0
 
-            TPR_list, FPR_list, F1_list = [], [], []
-            DP_disparities = []
+            unique_genders = np.unique(all_genders)
 
+            # To store differences for each metric across genders and classes
+            TPR_diffs = []
+            FPR_diffs = []
+            F1_diffs = []
+
+            # Compute TPR, FPR, f1 per class per gender
+            # We'll have a structure: For each class c:
+            #   For each gender g in unique_genders: compute metrics and store
             for c in range(C):
                 pred_c = all_preds[:, c]
                 label_c = all_labels[:, c]
 
-                TP = np.sum((pred_c == 1) & (label_c == 1))
-                FP = np.sum((pred_c == 1) & (label_c == 0))
-                FN = np.sum((pred_c == 0) & (label_c == 1))
-                TN = np.sum((pred_c == 0) & (label_c == 0))
+                # Compute per-gender metrics
+                gender_metrics = {}
+                for g in unique_genders:
+                    mask = (all_genders == g)
+                    pred_g = pred_c[mask]
+                    label_g = label_c[mask]
 
-                TPR = safe_div(TP, TP+FN)
-                FPR = safe_div(FP, FP+TN)
-                precision = safe_div(TP, TP+FP)
-                recall = TPR
-                f1 = safe_div(2*precision*recall, precision+recall) if (precision+recall)>0 else 0.0
+                    TP_g = np.sum((pred_g == 1) & (label_g == 1))
+                    FP_g = np.sum((pred_g == 1) & (label_g == 0))
+                    FN_g = np.sum((pred_g == 0) & (label_g == 1))
+                    TN_g = np.sum((pred_g == 0) & (label_g == 0))
 
-                TPR_list.append(TPR)
-                FPR_list.append(FPR)
-                F1_list.append(f1)
+                    TPR_g = safe_div(TP_g, TP_g+FN_g)
+                    FPR_g = safe_div(FP_g, FP_g+TN_g)
+                    precision_g = safe_div(TP_g, TP_g+FP_g)
+                    recall_g = TPR_g
+                    f1_g = safe_div(2*precision_g*recall_g, precision_g+recall_g) if (precision_g+recall_g)>0 else 0.0
 
+                    gender_metrics[g] = (TPR_g, FPR_g, f1_g)
+
+                # Now compute differences between each pair of genders for this class
+                # If only two genders, it's straightforward; if more, do pairwise
+                g_list = list(gender_metrics.keys())
+                for i in range(len(g_list)):
+                    for j in range(i+1, len(g_list)):
+                        g1, g2 = g_list[i], g_list[j]
+                        TPR_diff = abs(gender_metrics[g1][0] - gender_metrics[g2][0])
+                        FPR_diff = abs(gender_metrics[g1][1] - gender_metrics[g2][1])
+                        F1_diff = abs(gender_metrics[g1][2] - gender_metrics[g2][2])
+
+                        TPR_diffs.append(TPR_diff)
+                        FPR_diffs.append(FPR_diff)
+                        F1_diffs.append(F1_diff)
+
+            def rms_gap(values):
+                values = np.array(values)
+                if len(values) == 0:
+                    return 0.0
+                mean_val = values.mean()
+                diff = values - mean_val
+                return math.sqrt(np.mean(diff**2))
+
+            # Compute RMS and max for each metric
+            rms_tpr_gap = rms_gap(TPR_diffs)
+            rms_fpr_gap = rms_gap(FPR_diffs)
+            rms_f1_gap = rms_gap(F1_diffs)
+
+            max_tpr_gap = max(TPR_diffs) if len(TPR_diffs)>0 else 0.0
+            max_fpr_gap = max(FPR_diffs) if len(FPR_diffs)>0 else 0.0
+            max_f1_gap = max(F1_diffs) if len(F1_diffs)>0 else 0.0
+
+            DP_disparities = []
+            for c in range(C):
+                pred_c = all_preds[:, c]
+                label_c = all_labels[:, c]
                 pred_1 = np.sum(pred_c==1)
                 n_c = len(pred_c)
                 global_pos = safe_div(pred_1, n_c)
                 dp_vals = []
-                unique_genders = np.unique(all_genders)
                 for z in unique_genders:
                     z_mask = (all_genders == z)
                     pred_1_z = np.sum(pred_c[z_mask]==1)
@@ -378,33 +386,18 @@ class DownstreamExpert(nn.Module):
                 else:
                     DP_disparities.append(0.0)
 
-            def rms_gap(values):
-                values = np.array(values)
-                if len(values) == 0:
-                    return 0.0
-                mean_val = values.mean()
-                diff = values - mean_val
-                return math.sqrt(np.mean(diff**2))
-
-            rms_tpr = rms_gap(TPR_list)
-            rms_fpr = rms_gap(FPR_list)
-            rms_f1 = rms_gap(F1_list)
             rms_dp = rms_gap(DP_disparities)
-
-            max_tpr = max(TPR_list) if TPR_list else 0.0
-            max_fpr = max(FPR_list) if FPR_list else 0.0
-            max_f1 = max(F1_list) if F1_list else 0.0
-            max_dp = max(DP_disparities) if DP_disparities else 0.0
+            max_dp_gap = np.max(DP_disparities) if len(DP_disparities)>0 else 0.0
 
             with open(Path(self.expdir) / "log.log", 'a') as f:
-                print(f"{mode} TPR RMS disparity: {rms_tpr}, max disparity: {max_tpr}")
-                f.write(f"{mode} TPR RMS disparity: {rms_tpr}, max disparity: {max_tpr}\n")
-                print(f"{mode} FPR RMS disparity: {rms_fpr}, max disparity: {max_fpr}")
-                f.write(f"{mode} FPR RMS disparity: {rms_fpr}, max disparity: {max_fpr}\n")
-                print(f"{mode} F1 RMS disparity: {rms_f1}, max disparity: {max_f1}")
-                f.write(f"{mode} F1 RMS disparity: {rms_f1}, max disparity: {max_f1}\n")
-                print(f"{mode} DP RMS disparity: {rms_dp}, max disparity: {max_dp}")
-                f.write(f"{mode} DP RMS disparity: {rms_dp}, max disparity: {max_dp}\n")
+                print(f"{mode} TPR RMS gap: {rms_tpr_gap}, max gap: {max_tpr_gap}")
+                f.write(f"{mode} TPR RMS gap: {rms_tpr_gap}, max gap: {max_tpr_gap}\n")
+                print(f"{mode} FPR RMS gap: {rms_fpr_gap}, max gap: {max_fpr_gap}")
+                f.write(f"{mode} FPR RMS gap: {rms_fpr_gap}, max gap: {max_fpr_gap}\n")
+                print(f"{mode} F1 RMS gap: {rms_f1_gap}, max gap: {max_f1_gap}")
+                f.write(f"{mode} F1 RMS gap: {rms_f1_gap}, max gap: {max_f1_gap}\n")
+                print(f"{mode} DP RMS disparity: {rms_dp}, max disparity: {max_dp_gap}")
+                f.write(f"{mode} DP RMS disparity: {rms_dp}, max disparity: {max_dp_gap}\n")
 
             with open(Path(self.expdir) / f"{mode}_{self.fold}_predict.txt", "w") as file:
                 lines = [f"{fname} {pred}\n" for fname, pred in zip(records["filename"], records["predict"])]
@@ -415,3 +408,4 @@ class DownstreamExpert(nn.Module):
                 file.writelines(lines)
 
         return save_names
+

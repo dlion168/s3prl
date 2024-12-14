@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
     FileName     [ dataset.py ]
-    Synopsis     [ The emotion classifier dataset, now also returns gender labels. ]
+    Synopsis     [ The emotion classifier dataset, now also returns gender labels and always returns sample_weights. ]
 """
 
 import json
@@ -48,9 +48,11 @@ class WavExtractor:
             wav_list = list(tqdm(p.imap(extract_wav, self.wav_path_list), total=len(self.wav_path_list)))
         return wav_list
 
-class WavSet(torch_utils.data.Dataset):
+class WavSet(torch_utils.Dataset):
     """
     WavSet now also stores gender labels.
+    Returns (wav, lab, utt, gender) per item.
+    Does not include sample_weights by itself; that will be handled by WeightedDataset.
     """
     def __init__(self, wav_list, lab_list, utt_list, gender_list,
                  print_dur=False, lab_type='categorical', 
@@ -77,51 +79,36 @@ class WavSet(torch_utils.data.Dataset):
 
     def __getitem__(self, idx):
         cur_wav = extract_wav(self.wav_list[idx])[:self.max_dur]
-        cur_dur = len(cur_wav)
         cur_wav = (cur_wav - self.wav_mean) / (self.wav_std + 1e-6)
         cur_utt = self.utt_list[idx]
         cur_lab = self.lab_list[idx]
         cur_gender = self.gender_list[idx]  # 0: Male, 1: Female
 
         if self.print_dur:
-            return cur_wav, cur_lab, cur_utt, cur_dur, cur_gender
+            return cur_wav, cur_lab, cur_utt, len(cur_wav), cur_gender
         else:
             return cur_wav, cur_lab, cur_utt, cur_gender
 
 def collate_fn_padd(batch):
     """
-    Now also collates gender labels. Batch may contain duration if print_dur=True.
-
-    The batch item now possibly has 5 elements: (wav, lab, utt, dur, gender)
-    or 4 elements: (wav, lab, utt, gender) if not print_dur.
+    Now we assume WeightedDataset is always used,
+    so each item has (wav, lab, utt, gender, weight).
     """
-    first_item = batch[0]
-    has_dur = (len(first_item) == 5)
-
     total_wav = []
     total_lab = []
     total_utt = []
     total_gender = []
-    total_dur = []
-
-    for item in batch:
-        if has_dur:
-            wav, lab, utt, dur, gender = item
-            total_dur.append(dur)
-        else:
-            wav, lab, utt, gender = item
-
+    total_weight = []
+    for wav, lab, utt, gender, w in batch:
         total_wav.append(torch.Tensor(wav))
         total_lab.append(lab)
         total_utt.append(utt)
         total_gender.append(gender)
-
-    total_lab = torch.tensor(np.asarray(total_lab), dtype=torch.float32)
-    total_gender = torch.tensor(total_gender, dtype=torch.long)
-
-    # Return gender along with other data.
-    # Format: (list_of_wav, labs, utts, gender)
-    return total_wav, total_lab, total_utt, total_gender
+        total_weight.append(w)
+    total_lab = torch.Tensor(np.asarray(total_lab))
+    total_gender = torch.Tensor(total_gender).long()
+    total_weight = torch.Tensor(total_weight)
+    return total_wav, total_lab, total_utt, total_gender, total_weight
 
 def collate_fn(samples):
     return zip(*samples)
@@ -161,35 +148,20 @@ class DataManager:
         return utt_list
 
     def __load_msp_cat_label_dict__(self, label_path):
-        """
-        Load both emotion labels and gender labels into dicts.
-        
-        CSV format:
-        FileName,angry,sad,disgust,fear,neutral,happy,SpkrID,Gender,Split_Set
-        """
         self.msp_label_dict = dict()
         self.msp_gender_dict = dict()
         emo_class_list = self.get_categorical_emo_class()
 
         with open(label_path, 'r') as f:
             header = f.readline().strip().split(",")
-            # Map emotion names to indices
             emo_idx_list = [header.index(emo) for emo in emo_class_list]
-
-            # Gender index
             gender_idx = header.index("Gender")
-
             csv_reader = csv.reader(f)
             for row in csv_reader:
                 utt_id = row[0]
-                # Extract emotion labels
                 cur_emo_lab = [float(row[emo_idx]) for emo_idx in emo_idx_list]
                 self.msp_label_dict[utt_id] = cur_emo_lab
-
-                # Extract gender
                 gender_str = row[gender_idx]
-                # Map gender string to int
-                # Assume: Male=0, Female=1
                 if gender_str.lower() == "female":
                     gender_label = 1
                 elif gender_str.lower() == "male":
@@ -222,24 +194,18 @@ def prepare_datasets(datarc, config_path):
     label_path = os.path.join(datarc['root'], datarc['corpus'], datarc['p_or_s'], 
                                "labels_consensus_" + datarc['test_fold'].replace("fold","") + ".csv")
 
-    snum = 10000000000000000
-
-    # Get utt lists
-    train_utts = dam.get_utt_list("train", label_path=label_path)[:snum]
-    dev_utts = dam.get_utt_list("dev", label_path=label_path)[:snum]
+    train_utts = dam.get_utt_list("train", label_path=label_path)
+    dev_utts = dam.get_utt_list("dev", label_path=label_path)
     test_utts = dam.get_utt_list("test", label_path=label_path)
 
-    # Get wav paths
-    train_wav_path = dam.get_wav_path("train", wav_loc=audio_path, label_path=label_path)[:snum]
-    dev_wav_path = dam.get_wav_path("dev", wav_loc=audio_path, label_path=label_path)[:snum]
+    train_wav_path = dam.get_wav_path("train", wav_loc=audio_path, label_path=label_path)
+    dev_wav_path = dam.get_wav_path("dev", wav_loc=audio_path, label_path=label_path)
     test_wav_path = dam.get_wav_path("test", wav_loc=audio_path, label_path=label_path)
 
-    # Load labels and genders
     train_labs, train_genders = dam.get_msp_labels_and_gender(train_utts, lab_type='categorical', label_path=label_path)
     dev_labs, dev_genders = dam.get_msp_labels_and_gender(dev_utts, lab_type='categorical', label_path=label_path)
     test_labs, test_genders = dam.get_msp_labels_and_gender(test_utts, lab_type='categorical', label_path=label_path)
 
-    # Compute class balanced weights
     k_threshold = 1 / train_labs.shape[1]
     train_labs_tensor = torch.Tensor(train_labs)
     train_labs_binary = torch.where(train_labs_tensor > k_threshold, 1.0, 0.0)
@@ -251,7 +217,6 @@ def prepare_datasets(datarc, config_path):
     weights = (1.0 - beta) / effective_num
     class_balanced_weights = (weights / torch.sum(weights)) * no_of_classes
 
-    # Load or compute normalization stats
     train_wavs_np_path = os.path.join(datarc['root'], datarc['corpus'], datarc['p_or_s'], 
                                       "Train_wavs_numpy_" + datarc['test_fold'] + ".pkl")
     if not os.path.exists(train_wavs_np_path):
@@ -269,21 +234,39 @@ def prepare_datasets(datarc, config_path):
 
     label_config = dam.get_label_config(label_type='categorical')
 
-    # Create datasets
     train_dataset = WavSet(train_wav_path, train_labs, train_utts, train_genders,
-                           print_dur=True, lab_type='categorical',
+                           print_dur=False, lab_type='categorical',
                            label_config=label_config,
                            wav_mean=wav_mean, wav_std=wav_std)
 
     dev_dataset = WavSet(dev_wav_path, dev_labs, dev_utts, dev_genders,
-                         print_dur=True, lab_type='categorical',
+                         print_dur=False, lab_type='categorical',
                          label_config=label_config,
                          wav_mean=wav_mean, wav_std=wav_std)
 
     test_dataset = WavSet(test_wav_path, test_labs, test_utts, test_genders,
-                          print_dur=True, lab_type='categorical',
+                          print_dur=False, lab_type='categorical',
                           label_config=label_config,
                           wav_mean=wav_mean, wav_std=wav_std)
 
     categorical_emo = dam.get_categorical_emo_class()
     return train_dataset, dev_dataset, test_dataset, class_balanced_weights, k_threshold, categorical_emo
+
+class WeightedDataset(torch.utils.data.Dataset):
+    """
+    A wrapper dataset that returns sample weights along with original data.
+    Here we assume base_dataset returns (wav, lab, utt, gender).
+    This wrapper adds a weight for each sample.
+    """
+
+    def __init__(self, base_dataset, weight_dict):
+        self.base_dataset = base_dataset
+        self.weight_dict = weight_dict
+
+    def __len__(self):
+        return len(self.base_dataset)
+
+    def __getitem__(self, idx):
+        wav, lab, utt, gender = self.base_dataset[idx]
+        w = self.weight_dict[idx]
+        return (wav, lab, utt, gender, w)

@@ -17,6 +17,7 @@ import pickle as pk
 from sklearn.metrics import classification_report
 
 from .dataset import prepare_datasets, collate_fn_padd
+from ..model import *
 
 # Suppress warnings for cleaner log outputs
 warnings.filterwarnings("ignore")

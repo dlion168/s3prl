@@ -18,6 +18,7 @@ from sklearn.exceptions import ConvergenceWarning
 from sklearn.metrics import classification_report
 
 from .dataset import prepare_datasets, collate_fn_padd
+from ..model import *
 
 warnings.filterwarnings("ignore", category=ConvergenceWarning)
 warnings.filterwarnings("ignore", category=UserWarning)
@@ -277,12 +278,15 @@ class DownstreamExpert(nn.Module):
         return total_loss
 
     def log_records(self, mode, records, logger, global_step, **kwargs):
-        save_names = []
-        all_preds = np.concatenate(records["all_predictions_binary"], axis=0)
-        all_labels = np.concatenate(records["all_labels_binary"], axis=0)
+        # Compute macro-f1 and acc here
+        all_preds = np.concatenate(records["all_predictions_binary"], axis=0)  # (N, C)
+        all_labels = np.concatenate(records["all_labels_binary"], axis=0)       # (N, C)
+
+        # macro-f1 from classification_report
         reprot_dict = classification_report(all_labels, all_preds, target_names=self.all_emotions, output_dict=True)
         macro_f1 = reprot_dict['macro avg']['f1-score']
 
+        # acc by one-vs-all accuracy
         N, C = all_labels.shape
         acc_list = []
         for c in range(C):
@@ -293,21 +297,21 @@ class DownstreamExpert(nn.Module):
             FN = np.sum((pred_c == 0) & (label_c == 1))
             TN = np.sum((pred_c == 0) & (label_c == 0))
             denom = (TP + TN + FP + FN)
-            accuracy_c = (TP + TN) / denom if denom>0 else 0
+            accuracy_c = (TP + TN) / denom if denom > 0 else 0
             acc_list.append(accuracy_c)
         acc = np.mean(acc_list) if len(acc_list) > 0 else 0.0
 
-        if 'loss' in records:
-            average_loss = torch.FloatTensor(records['loss']).mean().item()
-        else:
-            average_loss = 0.0
+        # Average loss
+        average_loss = torch.FloatTensor(records['loss']).mean().item()
 
+        # Log macro-f1, loss, acc
         metrics_to_log = {
             'macro-f1': macro_f1,
             'acc': acc,
             'loss': average_loss
         }
 
+        save_names = []
         for key, val in metrics_to_log.items():
             logger.add_scalar(f'emotion-{self.fold}/{mode}-{key}', val, global_step=global_step)
             with open(Path(self.expdir) / "log.log", 'a') as f:
@@ -320,38 +324,86 @@ class DownstreamExpert(nn.Module):
                 save_names.append(f'{mode}-best.ckpt')
 
         if mode in ["dev", "test"]:
-            all_genders = np.concatenate(records["all_genders"], axis=0)
+            all_genders = np.concatenate(records["all_genders"], axis=0)  # (N,)
 
             def safe_div(a, b):
                 return a / b if b > 0 else 0.0
 
-            TPR_list, FPR_list, F1_list = [], [], []
-            DP_disparities = []
+            unique_genders = np.unique(all_genders)
 
+            # To store differences for each metric across genders and classes
+            TPR_diffs = []
+            FPR_diffs = []
+            F1_diffs = []
+
+            # Compute TPR, FPR, f1 per class per gender
+            # We'll have a structure: For each class c:
+            #   For each gender g in unique_genders: compute metrics and store
             for c in range(C):
                 pred_c = all_preds[:, c]
                 label_c = all_labels[:, c]
 
-                TP = np.sum((pred_c == 1) & (label_c == 1))
-                FP = np.sum((pred_c == 1) & (label_c == 0))
-                FN = np.sum((pred_c == 0) & (label_c == 1))
-                TN = np.sum((pred_c == 0) & (label_c == 0))
+                # Compute per-gender metrics
+                gender_metrics = {}
+                for g in unique_genders:
+                    mask = (all_genders == g)
+                    pred_g = pred_c[mask]
+                    label_g = label_c[mask]
 
-                TPR = safe_div(TP, TP+FN)
-                FPR = safe_div(FP, FP+TN)
-                precision = safe_div(TP, TP+FP)
-                recall = TPR
-                f1 = safe_div(2*precision*recall, precision+recall) if (precision+recall)>0 else 0.0
+                    TP_g = np.sum((pred_g == 1) & (label_g == 1))
+                    FP_g = np.sum((pred_g == 1) & (label_g == 0))
+                    FN_g = np.sum((pred_g == 0) & (label_g == 1))
+                    TN_g = np.sum((pred_g == 0) & (label_g == 0))
 
-                TPR_list.append(TPR)
-                FPR_list.append(FPR)
-                F1_list.append(f1)
+                    TPR_g = safe_div(TP_g, TP_g+FN_g)
+                    FPR_g = safe_div(FP_g, FP_g+TN_g)
+                    precision_g = safe_div(TP_g, TP_g+FP_g)
+                    recall_g = TPR_g
+                    f1_g = safe_div(2*precision_g*recall_g, precision_g+recall_g) if (precision_g+recall_g)>0 else 0.0
 
+                    gender_metrics[g] = (TPR_g, FPR_g, f1_g)
+
+                # Now compute differences between each pair of genders for this class
+                # If only two genders, it's straightforward; if more, do pairwise
+                g_list = list(gender_metrics.keys())
+                for i in range(len(g_list)):
+                    for j in range(i+1, len(g_list)):
+                        g1, g2 = g_list[i], g_list[j]
+                        TPR_diff = abs(gender_metrics[g1][0] - gender_metrics[g2][0])
+                        FPR_diff = abs(gender_metrics[g1][1] - gender_metrics[g2][1])
+                        F1_diff = abs(gender_metrics[g1][2] - gender_metrics[g2][2])
+
+                        TPR_diffs.append(TPR_diff)
+                        FPR_diffs.append(FPR_diff)
+                        F1_diffs.append(F1_diff)
+
+            def rms_gap(values):
+                values = np.array(values)
+                if len(values) == 0:
+                    return 0.0
+                mean_val = values.mean()
+                diff = values - mean_val
+                return math.sqrt(np.mean(diff**2))
+
+            # Compute RMS and max for each metric
+            rms_tpr_gap = rms_gap(TPR_diffs)
+            rms_fpr_gap = rms_gap(FPR_diffs)
+            rms_f1_gap = rms_gap(F1_diffs)
+
+            max_tpr_gap = max(TPR_diffs) if len(TPR_diffs)>0 else 0.0
+            max_fpr_gap = max(FPR_diffs) if len(FPR_diffs)>0 else 0.0
+            max_f1_gap = max(F1_diffs) if len(F1_diffs)>0 else 0.0
+
+            # DP disparities remain the same as before
+            # DP is still computed globally as in the original code
+            DP_disparities = []
+            for c in range(C):
+                pred_c = all_preds[:, c]
+                label_c = all_labels[:, c]
                 pred_1 = np.sum(pred_c==1)
                 n_c = len(pred_c)
                 global_pos = safe_div(pred_1, n_c)
                 dp_vals = []
-                unique_genders = np.unique(all_genders)
                 for z in unique_genders:
                     z_mask = (all_genders == z)
                     pred_1_z = np.sum(pred_c[z_mask]==1)
@@ -363,22 +415,7 @@ class DownstreamExpert(nn.Module):
                 else:
                     DP_disparities.append(0.0)
 
-            def rms_gap(values):
-                values = np.array(values)
-                if len(values) == 0:
-                    return 0.0
-                mean_val = values.mean()
-                diff = values - mean_val
-                return math.sqrt(np.mean(diff**2))
-
-            rms_tpr_gap = rms_gap(TPR_list)
-            rms_fpr_gap = rms_gap(FPR_list)
-            rms_f1_gap = rms_gap(F1_list)
-            rms_dp_gap = rms_gap(DP_disparities)
-
-            max_tpr_gap = np.max(TPR_list) - np.min(TPR_list) if len(TPR_list)>1 else 0.0
-            max_fpr_gap = np.max(FPR_list) - np.min(FPR_list) if len(FPR_list)>1 else 0.0
-            max_f1_gap = np.max(F1_list) - np.min(F1_list) if len(F1_list)>1 else 0.0
+            rms_dp = rms_gap(DP_disparities)
             max_dp_gap = np.max(DP_disparities) if len(DP_disparities)>0 else 0.0
 
             with open(Path(self.expdir) / "log.log", 'a') as f:
@@ -388,8 +425,8 @@ class DownstreamExpert(nn.Module):
                 f.write(f"{mode} FPR RMS gap: {rms_fpr_gap}, max gap: {max_fpr_gap}\n")
                 print(f"{mode} F1 RMS gap: {rms_f1_gap}, max gap: {max_f1_gap}")
                 f.write(f"{mode} F1 RMS gap: {rms_f1_gap}, max gap: {max_f1_gap}\n")
-                print(f"{mode} DP RMS disparity: {rms_dp_gap}, max disparity: {max_dp_gap}")
-                f.write(f"{mode} DP RMS disparity: {rms_dp_gap}, max disparity: {max_dp_gap}\n")
+                print(f"{mode} DP RMS disparity: {rms_dp}, max disparity: {max_dp_gap}")
+                f.write(f"{mode} DP RMS disparity: {rms_dp}, max disparity: {max_dp_gap}\n")
 
             with open(Path(self.expdir) / f"{mode}_{self.fold}_predict.txt", "w") as file:
                 lines = [f"{fname} {pred}\n" for fname, pred in zip(records["filename"], records["predict"])]
