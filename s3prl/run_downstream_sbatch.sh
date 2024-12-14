@@ -2,7 +2,7 @@
 
 # Usage example:
 # sbatch run_downstream_sbatch.sh <distilled_model_checkpoint> <task> <stage> <current_row> <logfile_row>
-# sbatch run_downstream_sbatch.sh DistilHuBERT_100hrs_libri_l1_cos pitch_nsynth train 28 26
+# sbatch run_downstream_sbatch.sh distill_mert_init_mert_music4all_avgpool pitch_nsynth train 37 13
 
 # sbatch run_downstream_sbatch.sh $model asr
 #SBATCH --job-name=evaluate
@@ -22,7 +22,7 @@ current_row=${4:-90}           # Default to 90 if no current_row is provided
 logfile_row=${5:-90}
 
 log_file="logfiles/downstream/${distilled_model_checkpoint}/${task}/paper_method.log"
-upstream="distiller_local"
+upstream="multi_distiller_local" #  distiller_local multi_distiller_local
 
 #tasks :   instrument_nsynth    pitch_nsynth      aec_esc50
 # Create the log directory if it doesn't exist
