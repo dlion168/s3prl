@@ -136,9 +136,9 @@ class DownstreamExpert(nn.Module):
 
         # 損失函數 (情緒)
         self.objective = class_balanced_softmax_cross_entropy_with_softtarget
-        self.num_adversarial_layers = self.modelrc.get('num_adversarial_layers', 1)
-        self.lambda_diff = self.modelrc.get('lambda_diff', 0.0)  # λ_diff hyperparameter
-        self.lambda_adv = self.modelrc.get('lambda_adv', 0.1) 
+        self.num_adversarial_layers = downstream_expert['debias'].get('num_adversarial_layers', 1)
+        self.lambda_diff = downstream_expert['debias'].get('lambda_diff', 0.1)  # λ_diff hyperparameter
+        self.lambda_adv = downstream_expert['debias'].get('lambda_adv', 0.8) 
         # 對抗式性別分類器 (使用2層線性層)
         self.grl = GradientReversal(alpha=1.0)
         self.adv_encoders = nn.ModuleList()
@@ -258,7 +258,7 @@ class DownstreamExpert(nn.Module):
                 total_adv_loss += adv_loss
                 
                 collected_adv_features.append(adv_feature)
-        
+        adverserial_loss = self.adversarial_lambda / self.num_adversarial_layers * total_adv_loss
         difference_loss = 0.0
         if self.lambda_diff > 0.0 and len(collected_adv_features) > 1:
             # Suppose we have k adv_features: h_A_1, h_A_2, ..., h_A_k
@@ -281,7 +281,7 @@ class DownstreamExpert(nn.Module):
             difference_loss = self.lambda_diff * difference_loss
 
         # 合併損失
-        total_loss = emotion_loss + self.adversarial_lambda / self.num_adversarial_layers * total_adv_loss + difference_loss
+        total_loss = emotion_loss + adverserial_loss + difference_loss
 
         # 計算預測結果
         prediction_distribution = F.softmax(predicted_logits, dim=1)
@@ -296,6 +296,9 @@ class DownstreamExpert(nn.Module):
             records["predict"] = []
             records["truth"] = []
             records["loss"] = []
+            records["emotion_loss"] = []
+            records["adv_loss"] = []
+            records["diff_loss"] = []
 
         records["all_predictions_binary"].append(predictions_binary.cpu().numpy())
         records["all_labels_binary"].append(labels_binary.cpu().numpy())
@@ -306,6 +309,9 @@ class DownstreamExpert(nn.Module):
 
         # Store loss for later averaging
         records["loss"].append(total_loss.item())
+        records["emotion_loss"].append(emotion_loss.item())
+        records["adverserial_loss"].append(adverserial_loss.item())
+        records["difference_loss"].append(difference_loss.item())
         records["filename"] += filenames
 
         # 將預測結果及真實情緒寫入紀錄
@@ -348,7 +354,10 @@ class DownstreamExpert(nn.Module):
         metrics_to_log = {
             'macro-f1': macro_f1,
             'acc': acc,
-            'loss': average_loss
+            'loss': average_loss,
+            'emotion_loss': torch.FloatTensor(records['emotion_loss']).mean().item(),
+            'adverserial_loss': torch.FloatTensor(records['adverserial_loss']).mean().item(),
+            'difference_loss': torch.FloatTensor(records['difference_loss']).mean().item(),
         }
 
         save_names = []

@@ -50,7 +50,7 @@ class DownstreamExpert(nn.Module):
         self.upstream_dim = upstream_dim
         self.datarc = downstream_expert['datarc']
         self.modelrc = downstream_expert['modelrc']
-        self.training_mode = self.modelrc.get('training_mode', 'ERM')  
+        self.training_mode = downstream_expert['debias'].get('training_mode', 'ERM')  
         # Possible values: "ERM", "GroupDRO", "DS", "RW"
 
         self.fold = self.datarc.get('test_fold') or kwargs.get("downstream_variant")
@@ -106,25 +106,33 @@ class DownstreamExpert(nn.Module):
             class_gender_pairs.append((class_idx, gender, idx))
 
         counts = defaultdict(int)
+        class_counts = defaultdict(int)
+        # Group samples by class and gender
+        class_genders = defaultdict(lambda: defaultdict(list))
         for (c, g, i) in class_gender_pairs:
             counts[(c,g)] += 1
+            class_counts[c] += 1
+            class_genders[c][g].append(i)
 
         if method == "DS":
             # Downsampling
-            if len(counts) == 0:
-                # Just wrap with equal weights if empty
+            if len(class_gender_pairs) == 0:
+                # If no counts (empty), just assign equal weights to all instances
                 weight_dict = {i:1.0 for i in range(len(self.train_dataset))}
                 self.train_dataset = WeightedDataset(self.train_dataset, weight_dict)
                 return
-            min_count = min(counts.values())
-            group_samples = defaultdict(list)
-            for (c,g,i) in class_gender_pairs:
-                group_samples[(c,g)].append(i)
+
             new_indices = []
-            for (c,g), idx_list in group_samples.items():
-                random.shuffle(idx_list)
-                chosen = idx_list[:min_count]
-                new_indices.extend(chosen)
+            # For each class c, find the minimum count across all genders and downsample accordingly
+            for c, gender_dict in class_genders.items():
+                # Find the minimum count for this class across all genders
+                min_count_class = min(len(idx_list) for idx_list in gender_dict.values())
+                # Downsample each gender of this class to min_count_class
+                for g, idx_list in gender_dict.items():
+                    random.shuffle(idx_list)
+                    chosen = idx_list[:min_count_class]
+                    new_indices.extend(chosen)
+
             self.train_dataset = Subset(self.train_dataset, new_indices)
             # After downsampling, assign uniform weights=1
             weight_dict = {i:1.0 for i in range(len(self.train_dataset))}
@@ -137,11 +145,21 @@ class DownstreamExpert(nn.Module):
                 # No groups, uniform weights
                 weight_dict = {i:1.0 for i in range(len(self.train_dataset))}
             else:
-                weights_map = {k:1.0/v for k,v in counts.items()}
                 weight_dict = {}
-                for (c,g,i) in class_gender_pairs:
-                    weight_dict[i] = weights_map[(c,g)]
-            self.train_dataset = WeightedDataset(self.train_dataset, weight_dict)
+                # For each class c, find how many gender categories
+                # and total instances of class c is class_counts[c]
+                # G_c = number of genders for class c
+                for c, gender_dict in class_genders.items():
+                    G_c = len(gender_dict)            # number_of_genders_for_c
+                    sum_c = class_counts[c]           # total instances with class c
+
+                    for g, idx_list in gender_dict.items():
+                        group_count = counts[(c,g)]
+                        # w = (class_counts[c]/G_c) * (1.0 / counts[(c,g)])
+                        w = (sum_c / G_c) * (1.0 / group_count)
+                        for idx_sample in idx_list:
+                            weight_dict[idx_sample] = w
+                self.train_dataset = WeightedDataset(self.train_dataset, weight_dict)
             print("[RW] Assigned reweighting to training samples.")
         else:
             # ERM or GroupDRO: just assign uniform weights=1
