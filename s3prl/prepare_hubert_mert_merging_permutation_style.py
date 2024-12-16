@@ -22,8 +22,16 @@ from pretrain.multi_distiller.disable_dropout import disable_MERT_encoder_dropou
 from s3prl.utility.helper import backup, get_time_tag, hack_isinstance, is_leader_process, override
 
 from huggingface_hub import HfApi, HfFolder
+from inspect import getmembers, isfunction
+
+from merging_utils.model_merger import ModelMerge
 
 
+def contains_name(layer_name, node_list):
+    for node in node_list:
+        if node in layer_name:
+            return True
+    return False
 
 def get_merging_fn(name):
     """ Get alignment function from name. """
@@ -272,15 +280,17 @@ def main():
     with open("merging_utils/data_config.yaml", "r") as file:
         data_config = yaml.load(file, Loader=yaml.FullLoader)
     
-    # Use the get_dataloader function
-    pdb.set_trace()
-    dataloader = get_dataloader(data_config, split="train")
-    ## from the dataloader I just need the wav and then I need to compute
-    ## its length, then from the data and features I need to sample some data at random.
-    ## Do not use the whole librispeech 100.
+    
+    ####### get the dataset ########
 
-    graph1 = HuBERTGraph(deepcopy(model1), merge_type=merge_type).graphify()
-    graph2 = HuBERTGraph(deepcopy(hubert_model), merge_type=merge_type).graphify()
+    # Use the get_dataloader function
+    dataloader = get_dataloader(data_config, split="train") ### this is loading 5k samples from librispeech100.     ## Do not use the whole librispeech 100.
+
+    ## from the dataloader I just need the wav and then I need to compute
+    ## its length and zero pad on the batches, this may be already implemented in the s3prl way
+
+    graph1 = HuBERTGraph(model1, merge_type=merge_type).graphify()   ###### IN THE ORIGINAL CODE THEY DO DEEPCOPY, BE SURE THAT THIS WILL NOT AFFECT!.
+    graph2 = HuBERTGraph(hubert_model, merge_type=merge_type).graphify()
     graphs = []
     graphs.append(  [graph1, graph2] )
 
@@ -288,12 +298,34 @@ def main():
 
     model_to_merge = load_randomized_hubert()
     merging_function = get_merging_fn("match_tensors_permute")
-    merging_metric = get_metric_fns("covariance")
 
-    ####### get the dataset ########
+    merging_metric = get_metric_fns(["covariance"])
+
 
 
     #### I need a new model where i will end up doing the merging, How to have a HuBERT randomly initalized? check this.
+
+
+    ##### initialize the merger#####
+    Merge = ModelMerge(graph1, graph2, device="cuda")
+
+    unmerge, cost_dict = Merge.transform(
+            model_to_merge, 
+            dataloader, 
+            sentence_level=None,#None
+            special_toks=False,#True
+            transform_fn=merging_function, #merging_fn is match_tensors_permute and get_merging_fn gets the implementation from the matching_functions.py script -> see line 28.
+            metric_classes=merging_metric,#{'covariance': <class 'metric_calculators.CovarianceMetric'>} 
+            permute_heads=True,#True
+            ignore_heads=False,#False
+            save_both=False,#False
+            merge_cls=False,#False, we do not need this for hubert and mert.
+            no_absval=True,#True -> not sure what it does.
+            saved_features=None,#None
+            res_type="first",#"first" -> not sure what this means.
+        )
+
+    ## the transfor  function later will modify the model1 and model2 so you may need to reload a fresh version of them if needed.
 
     # Fix seed and make backends deterministic
     random.seed(args.seed)

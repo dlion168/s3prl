@@ -1,0 +1,13 @@
+datarc:
+    train: ['train-clean-100-5000-samples']
+    dev-clean: ['dev-clean']
+    dev-other: ['dev-other']
+    test-clean: ['test-clean']
+    test-other: ['test-other']
+    num_workers: 8
+    train_batch_size: 32
+    batch_size: 32
+    eval_batch_size: 1
+    libri_root: '/export/home2/fabian/corpus/LibriSpeech/'
+    bucket_file: './data/len_for_bucket'
+    dict_path: "./downstream/asr/char.dict"
