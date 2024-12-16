@@ -10,6 +10,10 @@ import numpy as np
 from argparse import Namespace
 from torch.distributed import is_initialized, get_world_size
 from transformers import AutoModel, AutoConfig
+from metric_calculators import get_metric_fns
+from merging_utils.dataset import get_dataloader
+from copy import deepcopy
+
 import pdb
 
 from s3prl import hub
@@ -18,6 +22,14 @@ from pretrain.multi_distiller.disable_dropout import disable_MERT_encoder_dropou
 from s3prl.utility.helper import backup, get_time_tag, hack_isinstance, is_leader_process, override
 
 from huggingface_hub import HfApi, HfFolder
+
+
+
+def get_merging_fn(name):
+    """ Get alignment function from name. """
+    import matching_functions
+    matching_fns = dict([(k, v) for (k, v) in getmembers(matching_functions, isfunction) if 'match_tensors' in k])
+    return matching_fns[name]
 
 def wrap_mert_weights(mapped_state_dict):
     """Wrap MERT weights with 'model.' prefix to match HuBERT's architecture."""
@@ -113,6 +125,23 @@ def map_mert_to_hubert(state_dict):
             mapped_state_dict[key] = value
     
     return mapped_state_dict
+
+def load_randomized_hubert():
+    """
+    Load a HuBERT model and randomize its parameters.
+    """
+    # Load the pretrained HuBERT base model
+    hubert_model = getattr(hub, 'hubert_base')()
+
+    # Reinitialize the parameters with random values
+    for param in hubert_model.parameters():
+        if param.requires_grad:
+            torch.nn.init.normal_(param, mean=0, std=0.02)  # Random Gaussian initialization
+
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    hubert_model = hubert_model.to(device)
+
+    return hubert_model
 
 def load_hubert_base(model_name="hubert_base"):
     # Load HuBERT base model from s3prl
@@ -238,10 +267,33 @@ def main():
 
     merge_type = 'ff+attn'  # Change this to experiment with other types
 
-
-    graph1 = HuBERTGraph(model1, merge_type=merge_type).graphify()
+    ### Here I am missing to get a dataloader ######
+    # Load YAML configuration
+    with open("merging_utils/data_config.yaml", "r") as file:
+        data_config = yaml.load(file, Loader=yaml.FullLoader)
+    
+    # Use the get_dataloader function
     pdb.set_trace()
-    graph2 = HuBERTGraph(hubert_model, merge_type=merge_type, model_type="mert").graphify()
+    dataloader = get_dataloader(data_config, split="train")
+    ## from the dataloader I just need the wav and then I need to compute
+    ## its length, then from the data and features I need to sample some data at random.
+    ## Do not use the whole librispeech 100.
+
+    graph1 = HuBERTGraph(deepcopy(model1), merge_type=merge_type).graphify()
+    graph2 = HuBERTGraph(deepcopy(hubert_model), merge_type=merge_type).graphify()
+    graphs = []
+    graphs.append(  [graph1, graph2] )
+
+    #graphs = [Grapher(deepcopy(base_model), merge_type=merge_type, qk=args.qk, classifier=True).graphify() for base_model in base_models]
+
+    model_to_merge = load_randomized_hubert()
+    merging_function = get_merging_fn("match_tensors_permute")
+    merging_metric = get_metric_fns("covariance")
+
+    ####### get the dataset ########
+
+
+    #### I need a new model where i will end up doing the merging, How to have a HuBERT randomly initalized? check this.
 
     # Fix seed and make backends deterministic
     random.seed(args.seed)
