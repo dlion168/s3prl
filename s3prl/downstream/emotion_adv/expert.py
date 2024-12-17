@@ -144,18 +144,21 @@ class DownstreamExpert(nn.Module):
         self.adv_encoders = nn.ModuleList()
         for _ in range(self.num_adversarial_layers):
             encoder = nn.Sequential(
-                nn.Linear(self.modelrc['projector_dim'], self.modelrc['projector_dim'] // 2)
+                nn.Linear(self.modelrc['projector_dim'], self.modelrc['projector_dim']),
+                nn.ReLU(),
+                nn.Dropout(p=0.2),
+                nn.Linear(self.modelrc['projector_dim'], self.modelrc['projector_dim'] // 2),
             )
             self.adv_encoders.append(encoder)
         self.adv_classifiers = nn.ModuleList()
         for _ in range(self.num_adversarial_layers):
             classifier = nn.Sequential(
                 nn.ReLU(),
-                nn.Linear(self.modelrc['projector_dim'] // 2, 2)
+                nn.Linear(self.modelrc['projector_dim'] // 2, 1)
             )
             self.adv_classifiers.append(classifier)
 
-        self.gender_criterion = nn.CrossEntropyLoss()
+        self.gender_criterion = nn.BCEWithLogitsLoss() 
 
         self.expdir = expdir
         self.register_buffer('best_score', torch.ones(1) * 99999)
@@ -200,13 +203,8 @@ class DownstreamExpert(nn.Module):
         total_wav, total_lab, total_utt, total_gender = collate_fn_padd(batch)
         return total_wav, total_lab, total_utt, total_gender
 
-    def forward(self, mode, features, labels, filenames, records, gender_labels=None, **kwargs):
+    def forward(self, mode, features, labels, filenames, gender_labels, records, **kwargs):
         """
-        前向傳播：
-        1. 使用模型預測情緒分佈
-        2. 使用梯度反轉層與性別分類器預測性別
-        3. 損失 = 情緒損失 + 對抗損失 * lambda
-
         Args:
             mode (str): 訓練模式 (train/dev/test)
             features (list[Tensor]): 每個樣本的聲音特徵
@@ -237,6 +235,8 @@ class DownstreamExpert(nn.Module):
         # Only if valid labels are present
         total_adv_loss = 0.0
         collected_adv_features = []  # Will store h_A (adv_feature) for difference loss calculation
+        correct_gender_preds = 0
+        total_gender_samples = 0
 
         for idx in range(self.num_adversarial_layers):
             # Check if all are -1 (no valid labels)
@@ -250,15 +250,21 @@ class DownstreamExpert(nn.Module):
                 valid_labels = gender_labels[valid_mask]
 
                 # Adversarial prediction
-                adv_features = torch.mean(valid_features, dim=1)
-                reversed_features = self.grl(adv_features)
-                adv_feature = self.adv_encoders[idx](reversed_features)
-                adv_pred = self.adv_classifiers[idx](adv_feature)
-                adv_loss = self.gender_criterion(adv_pred, valid_labels)
+                adv_features = torch.mean(valid_features, dim=1)    
+                adv_feature = self.adv_encoders[idx](adv_features)
+                reversed_features = self.grl(adv_feature)
+                adv_pred = self.adv_classifiers[idx](reversed_features)
+                adv_loss = self.gender_criterion(adv_pred.squeeze(1), valid_labels.float())
                 total_adv_loss += adv_loss
                 
+                # Gender prediction accuracy
+                gender_preds = (torch.sigmoid(adv_pred.squeeze(1)) > 0.5).float()
+                correct_gender_preds += (gender_preds == valid_labels).sum().item()
+                total_gender_samples += valid_labels.size(0)
+                
                 collected_adv_features.append(adv_feature)
-        adverserial_loss = self.adversarial_lambda / self.num_adversarial_layers * total_adv_loss
+        adverserial_loss = self.lambda_adv / self.num_adversarial_layers * total_adv_loss
+        gender_accuracy = correct_gender_preds / total_gender_samples if total_gender_samples > 0 else 0.0
         difference_loss = 0.0
         if self.lambda_diff > 0.0 and len(collected_adv_features) > 1:
             # Suppose we have k adv_features: h_A_1, h_A_2, ..., h_A_k
@@ -299,6 +305,7 @@ class DownstreamExpert(nn.Module):
             records["emotion_loss"] = []
             records["adv_loss"] = []
             records["diff_loss"] = []
+            records["gender_accuracy"] = []
 
         records["all_predictions_binary"].append(predictions_binary.cpu().numpy())
         records["all_labels_binary"].append(labels_binary.cpu().numpy())
@@ -311,8 +318,9 @@ class DownstreamExpert(nn.Module):
         records["loss"].append(total_loss.item())
         records["emotion_loss"].append(emotion_loss.item())
         records["adverserial_loss"].append(adverserial_loss.item())
-        records["difference_loss"].append(difference_loss.item())
+        records["difference_loss"].append(difference_loss)
         records["filename"] += filenames
+        records["gender_accuracy"].append(gender_accuracy)
 
         # 將預測結果及真實情緒寫入紀錄
         all_emotions_np = np.array(self.all_emotions)
@@ -358,6 +366,7 @@ class DownstreamExpert(nn.Module):
             'emotion_loss': torch.FloatTensor(records['emotion_loss']).mean().item(),
             'adverserial_loss': torch.FloatTensor(records['adverserial_loss']).mean().item(),
             'difference_loss': torch.FloatTensor(records['difference_loss']).mean().item(),
+            'gender_accuracy': torch.FloatTensor(records['gender_accuracy']).mean().item(),
         }
 
         save_names = []

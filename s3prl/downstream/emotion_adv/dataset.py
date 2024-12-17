@@ -48,7 +48,7 @@ class WavExtractor:
             wav_list = list(tqdm(p.imap(extract_wav, self.wav_path_list), total=len(self.wav_path_list)))
         return wav_list
 
-class WavSet(torch_utils.data.Dataset):
+class WavSet(torch_utils.Dataset):
     """
     WavSet now also stores gender labels.
     """
@@ -96,20 +96,14 @@ def collate_fn_padd(batch):
     or 4 elements: (wav, lab, utt, gender) if not print_dur.
     """
     first_item = batch[0]
-    has_dur = (len(first_item) == 5)
 
     total_wav = []
     total_lab = []
     total_utt = []
     total_gender = []
-    total_dur = []
 
     for item in batch:
-        if has_dur:
-            wav, lab, utt, dur, gender = item
-            total_dur.append(dur)
-        else:
-            wav, lab, utt, gender = item
+        wav, lab, utt, gender = item
 
         total_wav.append(torch.Tensor(wav))
         total_lab.append(lab)
@@ -195,7 +189,7 @@ class DataManager:
                 elif gender_str.lower() == "male":
                     gender_label = 0
                 else:
-                    gender_label = -1
+                    NotImplementedError("Unknown gender")
                 self.msp_gender_dict[utt_id] = gender_label
 
     def get_msp_labels_and_gender(self, utt_list, lab_type, label_path):
@@ -222,16 +216,14 @@ def prepare_datasets(datarc, config_path):
     label_path = os.path.join(datarc['root'], datarc['corpus'], datarc['p_or_s'], 
                                "labels_consensus_" + datarc['test_fold'].replace("fold","") + ".csv")
 
-    snum = 10000000000000000
-
     # Get utt lists
-    train_utts = dam.get_utt_list("train", label_path=label_path)[:snum]
-    dev_utts = dam.get_utt_list("dev", label_path=label_path)[:snum]
+    train_utts = dam.get_utt_list("train", label_path=label_path)
+    dev_utts = dam.get_utt_list("dev", label_path=label_path)
     test_utts = dam.get_utt_list("test", label_path=label_path)
 
     # Get wav paths
-    train_wav_path = dam.get_wav_path("train", wav_loc=audio_path, label_path=label_path)[:snum]
-    dev_wav_path = dam.get_wav_path("dev", wav_loc=audio_path, label_path=label_path)[:snum]
+    train_wav_path = dam.get_wav_path("train", wav_loc=audio_path, label_path=label_path)
+    dev_wav_path = dam.get_wav_path("dev", wav_loc=audio_path, label_path=label_path)
     test_wav_path = dam.get_wav_path("test", wav_loc=audio_path, label_path=label_path)
 
     # Load labels and genders
@@ -271,17 +263,17 @@ def prepare_datasets(datarc, config_path):
 
     # Create datasets
     train_dataset = WavSet(train_wav_path, train_labs, train_utts, train_genders,
-                           print_dur=True, lab_type='categorical',
+                           print_dur=False, lab_type='categorical',
                            label_config=label_config,
                            wav_mean=wav_mean, wav_std=wav_std)
 
     dev_dataset = WavSet(dev_wav_path, dev_labs, dev_utts, dev_genders,
-                         print_dur=True, lab_type='categorical',
+                         print_dur=False, lab_type='categorical',
                          label_config=label_config,
                          wav_mean=wav_mean, wav_std=wav_std)
 
     test_dataset = WavSet(test_wav_path, test_labs, test_utts, test_genders,
-                          print_dur=True, lab_type='categorical',
+                          print_dur=False, lab_type='categorical',
                           label_config=label_config,
                           wav_mean=wav_mean, wav_std=wav_std)
 

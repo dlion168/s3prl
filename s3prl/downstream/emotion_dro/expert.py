@@ -36,6 +36,16 @@ def class_balanced_softmax_cross_entropy_with_softtarget(logits, targets, weight
     else:
         raise NotImplementedError('Unsupported reduction mode.')
 
+def safe_div(a, b):
+    return a / b if b > 0 else 0.0
+            
+def rms_gap(values):
+    values = np.array(values)
+    if len(values) == 0:
+        return 0.0
+    mean_val = values.mean()
+    diff = values - mean_val
+    return math.sqrt(np.mean(diff**2))
 class DownstreamExpert(nn.Module):
     """
     training_mode (merged):
@@ -43,6 +53,7 @@ class DownstreamExpert(nn.Module):
     - "GroupDRO": Group Distributionally Robust Optimization
     - "DS": Downsampling debiasing
     - "RW": Reweighting debiasing
+    - "GR": Gap Regularization debiasing using TPR difference and FPR difference
     """
 
     def __init__(self, upstream_dim, downstream_expert, expdir, **kwargs):
@@ -51,7 +62,8 @@ class DownstreamExpert(nn.Module):
         self.datarc = downstream_expert['datarc']
         self.modelrc = downstream_expert['modelrc']
         self.training_mode = downstream_expert['debias'].get('training_mode', 'ERM')  
-        # Possible values: "ERM", "GroupDRO", "DS", "RW"
+        # Possible values: "ERM", "GroupDRO", "DS", "RW", "GR"
+        self.lambda_GR = downstream_expert['debias'].get('lambda_GR', 1.0)
 
         self.fold = self.datarc.get('test_fold') or kwargs.get("downstream_variant")
         print(f"[Expert] - Using testing fold: \"{self.fold}\".")
@@ -96,7 +108,7 @@ class DownstreamExpert(nn.Module):
         """
         For DS (downsampling), we subset the dataset.
         For RW (reweighting), we wrap the dataset with WeightedDataset using computed weights.
-        For ERM/GroupDRO, we also wrap with WeightedDataset, but assign equal weights=1.
+        For ERM/GroupDRO/GR, we also wrap with WeightedDataset, but assign equal weights=1.
         """
         # Collect group info
         class_gender_pairs = []
@@ -230,6 +242,72 @@ class DownstreamExpert(nn.Module):
             else:
                 worst_L_g, worst_g = max(loss_g_list, key=lambda x: x[0])
                 total_loss = worst_L_g
+        elif self.training_mode == "GR":
+            # predictions_binary, labels_binary, gender_labels are already torch tensors
+            # predictions_binary: (B, C)
+            # labels_binary: (B, C)
+            # gender_labels: (B,)
+
+            gender_labels = gender_labels.to(device)
+            unique_genders = torch.unique(gender_labels)
+
+            TPR_diffs = []
+            FPR_diffs = []
+
+            # Some small epsilon to avoid division by zero
+            eps = 1e-8
+
+            B, C = labels_binary.shape
+            for c in range(C):
+                pred_c = predictions_binary[:, c]   # (B,)
+                label_c = labels_binary[:, c]       # (B,)
+
+                # Compute per-gender TPR & FPR
+                gender_TPR = {}
+                gender_FPR = {}
+
+                for g in unique_genders:
+                    mask = (gender_labels == g).float()  # (B,)
+                    TP_g = (pred_c * label_c * mask).sum()
+                    FN_g = ((1 - pred_c) * label_c * mask).sum()
+                    FP_g = (pred_c * (1 - label_c) * mask).sum()
+                    TN_g = ((1 - pred_c) * (1 - label_c) * mask).sum()
+
+                    # Compute TPR and FPR
+                    TPR_g = TP_g / (TP_g + FN_g + eps)
+                    FPR_g = FP_g / (FP_g + TN_g + eps)
+
+                    gender_TPR[g.item()] = TPR_g
+                    gender_FPR[g.item()] = FPR_g
+
+                # Compute pairwise differences for TPR and FPR
+                g_list = list(gender_TPR.keys())
+                for i in range(len(g_list)):
+                    for j in range(i+1, len(g_list)):
+                        g1, g2 = g_list[i], g_list[j]
+                        # Differences are still tensors, so gradients can flow
+                        TPR_diff = (gender_TPR[g1] - gender_TPR[g2]).abs()
+                        FPR_diff = (gender_FPR[g1] - gender_FPR[g2]).abs()
+                        TPR_diffs.append(TPR_diff)
+                        FPR_diffs.append(FPR_diff)
+
+            # Convert lists to tensors if they are not empty; if empty, set them to zero
+            if len(TPR_diffs) == 0:
+                TPR_RMS_gap = torch.tensor(0.0, device=device)
+            else:
+                TPR_diffs_tensor = torch.stack(TPR_diffs)
+                mean_TPR = TPR_diffs_tensor.mean()
+                TPR_RMS_gap = torch.sqrt(((TPR_diffs_tensor - mean_TPR)**2).mean())
+
+            if len(FPR_diffs) == 0:
+                FPR_RMS_gap = torch.tensor(0.0, device=device)
+            else:
+                FPR_diffs_tensor = torch.stack(FPR_diffs)
+                mean_FPR = FPR_diffs_tensor.mean()
+                FPR_RMS_gap = torch.sqrt(((FPR_diffs_tensor - mean_FPR)**2).mean())
+
+            classification_loss = per_sample_loss.mean()
+            total_loss = classification_loss + self.lambda_GR * (TPR_RMS_gap + FPR_RMS_gap)
         else:
             raise NotImplementedError(f"Unknown training mode: {self.training_mode}")
 
@@ -316,10 +394,6 @@ class DownstreamExpert(nn.Module):
 
         if mode in ["dev", "test"]:
             all_genders = np.concatenate(records["all_genders"], axis=0)  # (N,)
-
-            def safe_div(a, b):
-                return a / b if b > 0 else 0.0
-
             unique_genders = np.unique(all_genders)
 
             # To store differences for each metric across genders and classes
@@ -367,14 +441,6 @@ class DownstreamExpert(nn.Module):
                         TPR_diffs.append(TPR_diff)
                         FPR_diffs.append(FPR_diff)
                         F1_diffs.append(F1_diff)
-
-            def rms_gap(values):
-                values = np.array(values)
-                if len(values) == 0:
-                    return 0.0
-                mean_val = values.mean()
-                diff = values - mean_val
-                return math.sqrt(np.mean(diff**2))
 
             # Compute RMS and max for each metric
             rms_tpr_gap = rms_gap(TPR_diffs)
