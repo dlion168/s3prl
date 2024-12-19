@@ -107,31 +107,63 @@ class ModelMerge(nn.Module):
             node_dists.append(torch.mean(dists))
         return node_dists
 
-    def remove_pads(self, intermediates, input, lens, sentence_level, special_toks):
-        pad_len = input.shape[1]
-        bsz = input.shape[0]
+    # def remove_pads(self, intermediates, input, lens, sentence_level, special_toks):
+    #     pad_len = input.shape[1]
+    #     bsz = input.shape[0]
 
+    #     for g_idx in range(len(self.graphs)):
+    #         for node in list(intermediates[0].keys()):
+    #             # if this is the final node with cls vectors only.
+    #             # in this case, the size is just bsz, aka one cls vector per item
+    #             if intermediates[g_idx][node].shape[1] == bsz:
+    #                 # do nothing:
+    #                 continue
+    #             # if not cls vectors, we need to remove padding tokens
+    #             else:
+    #                 tensor_to_edit = intermediates[g_idx][node]  # shape [feat_dim, num_tokens]
+    #                 # plus and minus one are to account for bos/eos tokens
+    #                 if sentence_level == 'cls':
+    #                     list_of_tensors = [tensor_to_edit[:,(i*pad_len+1):(i*pad_len+2)] for i in range(bsz)]
+    #                 else:
+    #                     if special_toks == False:
+    #                         list_of_tensors = [tensor_to_edit[:,(i*pad_len+1):(i*pad_len+lens[i]-1)] for i in range(bsz)]
+    #                     else:
+    #                         list_of_tensors = [tensor_to_edit[:,(i*pad_len):(i*pad_len+lens[i])] for i in range(bsz)]
+    #                 new_tensor = torch.cat(list_of_tensors, dim=1)
+    #                 intermediates[g_idx][node] = new_tensor
+    #     return intermediates
+    def remove_pads(self, intermediates, input, lens):
+        """
+        Removes padding from HuBERT intermediates based on downsampled feature lengths.
+
+        Args:
+            intermediates: List of feature maps or node representations.
+            input: Tensor input to the Transformer.
+            lens: List of downsampled lengths for each sequence in the batch.
+
+        Returns:
+            intermediates: Updated intermediates with padding removed.
+        """
+        bsz = len(input)  # Batch size
+        
+        
         for g_idx in range(len(self.graphs)):
             for node in list(intermediates[0].keys()):
-                # if this is the final node with cls vectors only.
-                # in this case, the size is just bsz, aka one cls vector per item
-                if intermediates[g_idx][node].shape[1] == bsz:
-                    # do nothing:
-                    continue
-                # if not cls vectors, we need to remove padding tokens
-                else:
-                    tensor_to_edit = intermediates[g_idx][node]  # shape [feat_dim, num_tokens]
-                    # plus and minus one are to account for bos/eos tokens
-                    if sentence_level == 'cls':
-                        list_of_tensors = [tensor_to_edit[:,(i*pad_len+1):(i*pad_len+2)] for i in range(bsz)]
-                    else:
-                        if special_toks == False:
-                            list_of_tensors = [tensor_to_edit[:,(i*pad_len+1):(i*pad_len+lens[i]-1)] for i in range(bsz)]
-                        else:
-                            list_of_tensors = [tensor_to_edit[:,(i*pad_len):(i*pad_len+lens[i])] for i in range(bsz)]
-                    new_tensor = torch.cat(list_of_tensors, dim=1)
-                    intermediates[g_idx][node] = new_tensor
+                tensor_to_edit = intermediates[g_idx][node]  # shape: [feat_dim, total_features]
+                # Split concatenated tensor based on `lens`
+                list_of_tensors = []
+                start_idx = 0
+                for i in range(bsz):
+                    end_idx = start_idx + lens[i]
+                    list_of_tensors.append(tensor_to_edit[:, start_idx:end_idx])
+                    start_idx = end_idx
+
+                # Concatenate valid features back
+                new_tensor = torch.cat(list_of_tensors, dim=1)
+                intermediates[g_idx][node] = new_tensor
+
         return intermediates
+
 
     def load_toks(self, saved_path):
         filenames = glob.glob(os.path.join(saved_path, 'toks', '*.pt'))
@@ -180,42 +212,38 @@ class ModelMerge(nn.Module):
         else:
             dataloader_list = dataloader
         
-        
-        pdb.set_trace()
 
         numel = 0
+        downsampling_rate = self.graphs[0].get_downsample_rates(key="encoder")
+
         for dataloader in dataloader_list:
-            for x, lens in tqdm(dataloader, desc="Forward Pass to Compute Merge Metrics: "):
+            for wavs, *others in tqdm(dataloader, desc="Forward Pass to Compute Merge Metrics: "):
 
                 # load batch & track number of elements
-                x = x.to(self.device)
-                if sentence_level != None:
-                    numel_local = x.shape[0]
-                else:
-                    numel_local =  sum(lens)
-                    if type(numel_local) != int:
-                        numel_local = numel_local.item()
-                    if special_toks == False:
-                        numel_local =- 2*x.shape[0] # num tokens - BOS/EOS toks 
+                wavs = [torch.FloatTensor(wav).to("cuda") for wav in wavs]
+                lens = [wav.shape[-1] // downsampling_rate for wav in wavs]  # Feature lengths per batch
+
+                numel_local =  sum(lens)
                 numel += numel_local
-                    
+                attn_mask = lengths_to_mask(lens)  # Use existing lengths_to_mask function
                 # get intermediates and remove padding idxs 
-                if 'Bert' in type(self.graphs[0].model).__name__:
-                    attn_mask = lengths_to_mask(list(lens))  
-                    intermediates =  [g.compute_intermediates(x, attn_mask=attn_mask.long().to(self.device)) for g in self.graphs] # shape [feat_dim, num_tokens]
-                else:
-                    intermediates = [g.compute_intermediates(x) for g in self.graphs] # shape [feat_dim, num_tokens]
-                intermediates = self.remove_pads(intermediates, x, lens, sentence_level, special_toks)
+                intermediates = [g.compute_intermediates(wavs) for g in self.graphs]  # shape [feat_dim, num_tokens]
+                
+                intermediates = self.remove_pads(intermediates, wavs, lens)
+
+                #intermediates = [g.compute_intermediates(wavs) for g in self.graphs] # shape [feat_dim, num_tokens]
                 nodes = list(intermediates[0].keys())
+
+
 
                 # if qk flag is on, add qk node placeholders for each layer
                 qk_flag = False
-                if self.graphs[0].qk == True:
-                    for i in range(self.graphs[0].num_layers):
-                        nodes.append(f'qk{i}')
-                    qk_flag = True
-
+                # if self.graphs[0].qk == True:
+                #     for i in range(self.graphs[0].num_layers):
+                #         nodes.append(f'qk{i}')
+                #     qk_flag = True
                 # populate metrics list 
+                pdb.set_trace()
                 if self.metrics is None:
                     self.metrics = {n: {k: v() for k, v in metric_classes.items()} for n in nodes}
                 
@@ -233,7 +261,7 @@ class ModelMerge(nn.Module):
                                     intermeds_float = self.sent_rep(intermediates, node, sentence_level, lens, special_toks)
                                 else:
                                     intermeds_float = [i[node].float().detach() for i in intermediates] # len = num_graphs
-                                metric.update(x.shape[0] , *intermeds_float) 
+                                metric.update(len(wavs) , *intermeds_float) 
                         elif contains_name(prev_node_layer, qk_nodes):
                             layer_no = [int(i) for i in self.graphs[0].get_node_info(node-1)['layer'].split('.') if i.isdigit()][0]
                             if qk_flag:
@@ -245,7 +273,7 @@ class ModelMerge(nn.Module):
                                     intermeds_float = self.sent_rep(intermediates, node, sentence_level, lens, special_toks)
                                 else:
                                     intermeds_float = [i[node].float().detach() for i in intermediates] # len = num_graphs
-                                metric.update(x.shape[0], *intermeds_float) 
+                                metric.update(len(wavs), *intermeds_float)
 
         for node, node_metrics in self.metrics.items():
             if isinstance(node, int):
@@ -253,10 +281,10 @@ class ModelMerge(nn.Module):
                 if prev_node_layer == None or not contains_name(prev_node_layer,special_cases_nodes):
                     for metric_name, metric in node_metrics.items():
                         self.metrics[node][metric_name] = metric.finalize(numel, print_featnorms=print_featnorms)
-        if self.graphs[0].qk == True:
-            for i in range(self.graphs[0].num_layers):
-                for metric_name, metric in self.metrics[f'qk{i}'].items():
-                    self.metrics[f'qk{i}'][metric_name] = metric.finalize(numel * 2, print_featnorms=print_featnorms) 
+        # if self.graphs[0].qk == True:
+        #     for i in range(self.graphs[0].num_layers):
+        #         for metric_name, metric in self.metrics[f'qk{i}'].items():
+        #             self.metrics[f'qk{i}'][metric_name] = metric.finalize(numel * 2, print_featnorms=print_featnorms) 
         
         return self.metrics, None
                 
@@ -936,6 +964,8 @@ class ModelMerge(nn.Module):
                                 metric_classes=metric_classes, 
                                 sentence_level=sentence_level,
                                 special_toks=special_toks)
+
+        pdb.set_trace()
 
         _, _, cost_dict = self.compute_transformations(transform_fn, reduce_ratio=1 - 1. / len(self.graphs),
                                     permute_heads=permute_heads,

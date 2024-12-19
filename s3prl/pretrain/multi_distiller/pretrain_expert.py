@@ -533,7 +533,6 @@ class MultiDistillerForPretrain(nn.Module):
                 print(f"teacher_3_processor is {teacher_3_processor}")
                 converted = convert_ssast_state_dict_to_astmodel(ssast_state_dict)
                 #converted['embeddings.position_embeddings'] = converted['embeddings.position_embeddings'][:, :507, :]
-                #pdb.set_trace()
                 teacher_3.load_state_dict(converted, strict=True)
                 teacher_3 = teacher_3.to("cuda")
                 disable_AST_encoder_dropout(teacher_3)
@@ -561,8 +560,8 @@ class MultiDistillerForPretrain(nn.Module):
         if self.cosine_loss > 0:
             print("[DistillerForPretrain] - Enabled cosine similarity loss.")
         
-        #import pdb
-        #pdb.set_trace()
+        import pdb
+        pdb.set_trace()
         # Ensure that we can only load weights from hubert_base or mert_v0_public
         model_to_initialize = self.config.initialize_from[0]
         if model_to_initialize == 'ast':
@@ -635,7 +634,8 @@ class MultiDistillerForPretrain(nn.Module):
 
 
             # Average all weights for the 'all' case
-            averaged_conv_layers = average_weights([hubert_state_dict, mert_state_dict])
+            averaged_conv_layers = average_weights([hubert_state_dict, mert_state_dict])yaudio1
+            
 
             # Load the averaged state_dict into the student model
             # Handle the conv layers specifically with just MERT and Hubert

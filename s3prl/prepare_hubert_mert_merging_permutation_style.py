@@ -304,6 +304,11 @@ def main():
 
 
     #### I need a new model where i will end up doing the merging, How to have a HuBERT randomly initalized? check this.
+    # for node in graph1.G.nodes:
+    #     info = graph1.get_node_info(node)
+    #     print(f"Node {node}: {info}")
+    #     print(f"Predecessors: {graph1.preds(node)}")
+    #     print(f"Successors: {graph1.succs(node)}")
 
 
     ##### initialize the merger#####

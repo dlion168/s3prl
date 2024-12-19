@@ -237,7 +237,7 @@ class MultiDistillerModel(nn.Module):
                 )
                 self.translator = None
             else: 
-                self.use_feat_translator = True
+                self.use_feat_translator = False
                 if not self.use_feat_translator:
                     self.output_layers = nn.ModuleDict({
                         teacher: nn.Sequential(

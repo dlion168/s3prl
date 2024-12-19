@@ -6,6 +6,7 @@ class HuBERTGraph(BIGGraph):
     def __init__(self, model, merge_type='ff+attn', num_layers=12, num_heads=12, model_type="hubert"):
         super().__init__(model)
         self.merge_type = merge_type
+        print(f"merge_type is {self.merge_type}")
         self.num_layers = num_layers
         self.num_heads = num_heads
         self.model_type = model_type
@@ -25,6 +26,9 @@ class HuBERTGraph(BIGGraph):
             'fc2': 'fc2',
             'final_ln': 'final_layer_norm',
         }
+    
+    def get_downsample_rates(self, key: str) -> int:
+        return 320
 
     def add_conv_block_nodes(self, name_prefix, input_node):
         """
@@ -74,11 +78,20 @@ class HuBERTGraph(BIGGraph):
         input_node = self.add_nodes_from_sequence(name_prefix, [NodeType.SUM], input_node)
         self.add_directed_edge(value_node, input_node)
 
-        # Merge Type: Attention Block
-        if merge_type in ['ff_only', 'ff+res', 'ff+attn', 'all']:
-            input_node = self.add_nodes_from_sequence(name_prefix, [modules['lin_attn'], NodeType.SUM], input_node)
-            self.add_directed_edge(residual, input_node)
-            input_node = self.add_nodes_from_sequence(name_prefix, [modules['attn_ln']], input_node=input_node)
+        # Add PREFIX before lin_attn for ff+attn merge type
+        if merge_type in ['ff+attn', 'all']:
+            input_node = self.add_nodes_from_sequence(name_prefix, 
+                                                    [NodeType.PREFIX, modules['lin_attn']], 
+                                                    input_node)
+        else:
+            input_node = self.add_nodes_from_sequence(name_prefix, 
+                                                    [modules['lin_attn']], 
+                                                    input_node)
+        # Add SUM for residual connection AFTER lin_attn
+        input_node = self.add_nodes_from_sequence(name_prefix, [NodeType.SUM], input_node)
+        self.add_directed_edge(residual, input_node)
+        
+        input_node = self.add_nodes_from_sequence(name_prefix, [modules['attn_ln']], input_node=input_node)
         
         # Residual Connection for Feed-Forward Layers
         if merge_type in ['res_only', 'ff+res', 'all']:
