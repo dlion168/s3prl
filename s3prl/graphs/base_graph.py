@@ -8,6 +8,8 @@ from enum import Enum
 from abc import ABC, abstractmethod
 import matplotlib.pyplot as plt
 import pdb
+from s3prl.upstream.interfaces import UpstreamBase
+
 
 class FeatureReshapeHandler:
     """ Instructions to reshape layer intermediates for alignment metric computation. """
@@ -81,6 +83,10 @@ class BIGGraph(ABC):
         # print("Available modules in named_modules:")
         # for key in self.named_modules.keys():
         #    print(key)
+        # Remove existing hooks if the model is UpstreamBase
+        if isinstance(self.model, UpstreamBase):
+            print("Removing all existing hooks from the model...")
+            self.model.remove_all_hooks()
 
         # working info about nodes for the merging algorithms
         # clear after use!
@@ -252,9 +258,24 @@ class BIGGraph(ABC):
                 for succ_node in self.G.succ[node]:
                     succ_info = self.get_node_info(succ_node)
                     print(f"Node {node}: PREFIX successor is {succ_info['layer']} and succ_info['type'] is {succ_info['type']}")
-                    if succ_info['type'] == NodeType.MODULE:
+
+                    # Handle attention outputs dynamically
+                    if succ_info['type'] == NodeType.MODULE and 'self_attn.out_proj' in succ_info.get('layer', ''):
+                        def prehook(m, input, output, this_node=node):
+                            print(f"Hooking output for attention at node {this_node}")
+                            x, attn = output
+                            print(f"m.__class__.__name__ is {m.__class__.__name__}")
+                            self.intermediates[this_node] = FeatureReshapeHandler(m.__class__.__name__, info).reshape(
+                                x.detach().to(device)
+                            )
+                        
+                        module = self.get_module(info['layer'])
+                        print(f"Adding posthook to capture attention output at layer: {info['layer']} for module {module}")
+                        self.hooks.append(module.register_forward_pre_hook(prehook))
+
+
+                    if succ_info['type'] == NodeType.MODULE and not 'self_attn.out_proj' in succ_info.get('layer', ''):
                         def prehook(m, x, this_node=node, this_info=succ_info):
-                            print(f"Hooking PREFIX node {this_node}, successor layer: {this_info['layer']}")
                             #print(f"m.__class__.__name__ is {m.__class__.__name__}")
 
                             self.intermediates[this_node] = \
@@ -264,9 +285,7 @@ class BIGGraph(ABC):
                             return None
                         
                         module = self.get_module(succ_info['layer'])
-                        print(f"module after self.get_module is {module}")
                         self.hooks.append(module.register_forward_pre_hook(prehook))
-                        print(f"Hook successfully registered for layer: {succ_info['layer']}")
                         break
                     elif succ_info['type'] == NodeType.EMBEDDING:
                         def prehook(m, x, this_node=node, this_info=succ_info):
@@ -281,17 +300,8 @@ class BIGGraph(ABC):
                     else:
                         raise RuntimeError(f"PREFIX node {node} had no module to attach to.")
                     
-            # Add a custom hook for capturing specific outputs (e.g., self_attn.out_proj)
-            elif info['type'] == NodeType.MODULE and 'self_attn.out_proj' in info.get('layer', ''):
-                def posthook(m, x, y, this_node=node):
-                    print(f"Hooking output for attention at node {this_node}")
-                    self.intermediates[this_node] = FeatureReshapeHandler(m.__class__.__name__, info).reshape(
-                        y.detach().to(device)
-                    )
-                
-                module = self.get_module(info['layer'])
-                print(f"Adding posthook to capture attention output at layer: {info['layer']}")
-                self.hooks.append(module.register_forward_hook(posthook))
+            
+
                         
             elif info['type'] == NodeType.POSTFIX:
                 

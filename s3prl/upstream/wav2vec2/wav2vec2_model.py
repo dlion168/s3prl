@@ -3281,6 +3281,7 @@ class TransformerSentenceEncoderLayer(nn.Module):
                 attn_mask=self_attn_mask,
                 need_weights=False,
             )
+            self.attention_output = x.clone()  # Add this to capture output pre-projection
             x = self.dropout1(x)
             x = residual + x
 
