@@ -8,6 +8,6 @@ datarc:
     train_batch_size: 32
     batch_size: 32
     eval_batch_size: 1
-    libri_root: '/export/home2/fabian/corpus/LibriSpeech/'
+    libri_root: '/livingrooms/public/superb/LibriSpeech/' #/livingrooms/public/superb/LibriSpeech/ /export/home2/fabian/corpus/LibriSpeech/
     bucket_file: './data/len_for_bucket'
     dict_path: "./downstream/asr/char.dict"

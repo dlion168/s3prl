@@ -2,7 +2,9 @@ import numpy as np
 import os 
 import torchaudio
 
+torchaudio.set_audio_backend("soundfile")
 CACHE_PATH = os.path.join(os.path.dirname(__file__), '.cache/')
+print(f"torchaudio.list_audio_backends()  {torchaudio.list_audio_backends()}   ")
 
 import os
 

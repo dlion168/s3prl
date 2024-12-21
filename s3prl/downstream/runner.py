@@ -447,13 +447,6 @@ class Runner():
         records = defaultdict(list)
         epoch = self.init_ckpt.get('Epoch', 0)
         train_split = self.config['runner'].get("train_dataloader", "train")
-
-        if self.args.find_best_checkpoint:
-            dataloader = self.downstream.model.get_dataloader(train_split)
-            print("[Runner] - Finding best checkpoint...")
-            self._find_best_checkpoint(dataloader, self.upstream, self.args, amp = amp)
-            return
-
         
     
         while pbar.n < pbar.total:
@@ -675,8 +668,7 @@ class Runner():
                 records["target_tokens"],
                 records["target_words"],
                 )
-            
-            acc = wer
+                acc = wer
             
 
         if self.args.update_results and not_during_training:

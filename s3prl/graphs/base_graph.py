@@ -23,6 +23,29 @@ class FeatureReshapeHandler:
         x = x.flatten(0, len(x.shape)-2).transpose(1, 0).contiguous()
         return x
     
+    def handle_transformer_sentence_encoder_layer(self, x):
+        """
+        Reshapes the tensor output from the TransformerSentenceEncoderLayer.
+
+        The input `x` is expected to be the attention output tensor with the shape:
+        [seq_len, batch_size, embedding_dim].
+
+        The goal is to reshape this to [embedding_dim, -1] for alignment purposes.
+        """
+        # Check that the tensor has the expected dimensionality
+        if len(x.shape) != 3:
+            raise ValueError(
+                f"Expected 3D tensor for TransformerSentenceEncoderLayer, but got shape {x.shape}"
+            )
+
+        # Reshape the tensor from [seq_len, batch_size, embedding_dim]
+        # to [embedding_dim, seq_len * batch_size]
+        # Transpose to [batch_size, seq_len, embedding_dim]
+        x = x.transpose(1, 0).contiguous()
+        # Reshape to [embedding_dim, -1] by flattening batch_size and seq_len
+        x = x.flatten(0, 1).transpose(1, 0).contiguous()
+        return x
+    
     def __init__(self, class_name, info):
         self.handler = {
             'BatchNorm2d': self.handle_conv2d,
@@ -38,6 +61,7 @@ class FeatureReshapeHandler:
             'AvgPool2d': self.handle_conv2d,
             'SpaceInterceptor': self.handle_conv2d,
             'Identity': self.handle_linear,
+            'TransformerSentenceEncoderLayer': self.handle_transformer_sentence_encoder_layer,
             
         }[class_name]
         self.info = info
@@ -260,21 +284,43 @@ class BIGGraph(ABC):
                     print(f"Node {node}: PREFIX successor is {succ_info['layer']} and succ_info['type'] is {succ_info['type']}")
 
                     # Handle attention outputs dynamically
-                    if succ_info['type'] == NodeType.MODULE and 'self_attn.out_proj' in succ_info.get('layer', ''):
-                        def prehook(m, input, output, this_node=node):
-                            print(f"Hooking output for attention at node {this_node}")
-                            x, attn = output
-                            print(f"m.__class__.__name__ is {m.__class__.__name__}")
-                            self.intermediates[this_node] = FeatureReshapeHandler(m.__class__.__name__, info).reshape(
-                                x.detach().to(device)
-                            )
+                    # if 'self_attn.out_proj' in succ_info.get('layer', ''):
+                    #     # Hook the custom attention_output attribute
+                    #     def prehook(m, x, this_node=node):
+                    #         print(f"Capturing attention output at PREFIX node {this_node}")
+                    #         if not hasattr(m, "attention_output"):
+                    #             print(f"Warning: does not have 'attention_output'. Skipping this hook.")
+                    #             return
+                    #         self.intermediates[this_node] = FeatureReshapeHandler(
+                    #             m.__class__.__name__, succ_info
+                    #         ).reshape(m.attention_output.detach().to(device))
+
+                    #     # Get the parent TransformerSentenceEncoderLayer module
+                    #     parent_layer_name = succ_info['layer'].replace('.self_attn.out_proj', '')
+                    #     parent_layer = self.get_module(parent_layer_name)
+                    #     print(f"Adding hook for TransformerSentenceEncoderLayer: {parent_layer_name}")
+                    #     self.hooks.append(parent_layer.register_forward_pre_hook(prehook))
+                    #     break
+                    # Hook the TransformerSentenceEncoderLayer directly
+                    if 'self_attn.out_proj' in succ_info.get('layer', ''):
+                        # Get the parent TransformerSentenceEncoderLayer module
+                        parent_layer_name = succ_info['layer'].replace('.self_attn.out_proj', '')
+                        parent_layer = self.get_module(parent_layer_name)
                         
-                        module = self.get_module(info['layer'])
-                        print(f"Adding posthook to capture attention output at layer: {info['layer']} for module {module}")
-                        self.hooks.append(module.register_forward_pre_hook(prehook))
+                        def posthook(m, input, output, this_node=node):
+                            #print(f"Capturing attention output at PREFIX node {this_node}")
+                            if not hasattr(m, "attention_output"):
+                                print(f"Warning: Layer {m} does not have 'attention_output'. Skipping this hook.")
+                                return
+                            self.intermediates[this_node] = FeatureReshapeHandler(
+                                m.__class__.__name__, succ_info
+                            ).reshape(m.attention_output.detach().to(device))
+                        
+                        #print(f"Adding forward hook for TransformerSentenceEncoderLayer: {parent_layer_name}")
+                        self.hooks.append(parent_layer.register_forward_hook(posthook))
+                        break
 
-
-                    if succ_info['type'] == NodeType.MODULE and not 'self_attn.out_proj' in succ_info.get('layer', ''):
+                    elif succ_info['type'] == NodeType.MODULE and not 'self_attn.out_proj' in succ_info.get('layer', ''):
                         def prehook(m, x, this_node=node, this_info=succ_info):
                             #print(f"m.__class__.__name__ is {m.__class__.__name__}")
 
@@ -300,8 +346,6 @@ class BIGGraph(ABC):
                     else:
                         raise RuntimeError(f"PREFIX node {node} had no module to attach to.")
                     
-            
-
                         
             elif info['type'] == NodeType.POSTFIX:
                 
@@ -355,10 +399,10 @@ class BIGGraph(ABC):
                 self.model(x, attention_mask=attn_mask)
             else:
                 self.model(x)
-            
-            print("Intermediates captured:")
-            for node, tensor in self.intermediates.items():
-                print(f"Node {node}, Shape: {tensor.shape}")
+            #sorted_intermediates = sorted(self.intermediates.items(), key=lambda item: item[0])
+            # print("Intermediates captured:")
+            # for node, tensor in self.intermediates.items():
+            #     print(f"Node {node}, Shape: {tensor.shape}")
             return self.intermediates
     
     

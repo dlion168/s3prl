@@ -9,7 +9,9 @@ import json
 from glob import glob
 import csv
 
+torchaudio.set_audio_backend("soundfile")
 CACHE_PATH = os.path.join(os.path.dirname(__file__), '.cache/')
+print(f"torchaudio.list_audio_backends()  {torchaudio.list_audio_backends()}   ")
 
 class ESC50Dataset(data.Dataset):
     def __init__(self, root_dir, folds, sample_rate=16000, return_audio_path=True):
@@ -84,6 +86,7 @@ class ESC50Dataset(data.Dataset):
 
     def __getitem__(self, idx):
         audio_path, label = self.data[idx]
+        torchaudio.set_audio_backend("soundfile")
         wav, sr = torchaudio.load(audio_path)
         
         # Resample to the desired sample rate and remove extra dimension

@@ -49,9 +49,9 @@ mixup:
 
 downstream_expert: 
   datarc:
-    file_path: /groups/ycevan/tasks/esc50-v2.0.0-full
+    file_path: /livingrooms/public/superb/esc50-v2.0.0-full
     num_workers: 8
-    test_fold: fold1
+    test_fold: fold1 ## 5 fold cv.fold00.json  fold01.json   fold02.json  fold03.json fold04.json
     train_batch_size: 32
     eval_batch_size: 32
 

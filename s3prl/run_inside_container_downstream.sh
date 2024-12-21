@@ -19,6 +19,10 @@ custom_checkpoint=${9:-""}  # Default to "hardcoded" method
 
 use_paper_method=true  # Set to false if you don't want the paper method
 
+if [ $task == "er" ]; then
+  task="emotion"
+fi
+
 echo "The upstream model is: ${distilled_model_checkpoint}"
 echo "CHECKPOINT_DIR is /workspace/s3prl/s3prl/result/pretrain/${distilled_model_checkpoint}"
 echo "CUDA_VISIBLE_DEVICES inside the container: $CUDA_VISIBLE_DEVICES"
@@ -26,7 +30,7 @@ echo "nvidia-smi "
 nvidia-smi
 
 # Install necessary Python packages
-pip install networkx pytorch-nlp transformers datasets==2.4.0 scipy==1.5.4 librosa==0.8.0 scikit-learn==0.24.2 matplotlib==3.3.4 modelscope==1.11.0
+pip install networkx pytorch-nlp transformers datasets==2.14.5 scipy==1.5.4 librosa==0.8.0 scikit-learn==0.24.2 matplotlib==3.3.4 modelscope==1.11.0
 
 # Configure Git and pull the latest changes if necessary
 cd /workspace/s3prl
@@ -321,7 +325,7 @@ if [ $task == "instrument_nsynth" ] || [ $task == "pitch_nsynth" ]; then
     echo "$stage $task"
       # Training (finetune on downstream task) # weighted sum of enc hdden states.
       python run_downstream.py -m $stage -c "./downstream/$task/config_singularity.yaml" -u $upstream -k $latest_checkpoint $paper_arg --update_results --current_row_downstream $current_row \
-      --logfile $logfile --logfile_row_downstream $logfile_row --json_file $json_file -d $task -p ${downstream_path}/${exp_setup}_debug --verbose
+      --logfile $logfile --logfile_row_downstream $logfile_row --json_file $json_file -d $task -p ${downstream_path}/${exp_setup} --verbose
       echo "experiment finished so we will run the evaluation."
       echo "experiment finished so we will run the evaluation."
       echo "\n \n \n \n \n."
@@ -352,7 +356,7 @@ if [ $task == "instrument_nsynth" ] || [ $task == "pitch_nsynth" ]; then
     fi
 fi
 
-if [ $task == "aec_esc50" ]; then
+if [ $task == "aec_esc50" ] || [ $task == "emotion" ]; then
 
 
  echo "running $task downstream"
@@ -400,4 +404,48 @@ if [ $task == "aec_esc50" ]; then
       done
     fi
 fi
+
+
+
+if [ $task == "sid" ]; then
+
+ echo "running $task downstream"
+ echo "running $model model"
+ cd $BASE_DIR_S3PRL
+
+    if [ $stage == "train" ]; then
+    echo "$stage $task"
+      # Training (finetune on downstream task) # weighted sum of enc hdden states.
+      python run_downstream.py -m $stage -c "./downstream/voxceleb1/config.yaml" -u $upstream -k $latest_checkpoint $paper_arg --update_results \
+      --current_row_downstream $current_row -d voxceleb1 -p ${downstream_path}/${exp_setup} \
+      --json_file $json_file --verbose --logfile $logfile --logfile_row_downstream $logfile_row
+      echo "experiment finished so we will run the evaluation."
+      echo "experiment finished so we will run the evaluation."
+      echo "\n \n \n \n \n."
+
+      python run_downstream.py \
+          -m evaluate --verbose \
+          -e ${downstream_path}/${exp_setup}/dev-best.ckpt \
+          -k $latest_checkpoint $paper_arg \
+          -u $upstream --json_file $json_file \
+          -d voxceleb1 --update_results --current_row_downstream $current_row \
+          -c "./downstream/voxceleb1/config.yaml"
+          
+    elif [ $stage == "resuming" ]; then 
+      echo "$stage $task"
+      # If training is interrupted, resume training
+      python run_downstream.py -m train -e ${downstream_path}/${exp_setup}
+
+    elif [ $stage == "evaluating" ]; then
+      # Evaluation (evaluate finetune result on test dataset)
+      python run_downstream.py \
+          -m evaluate --verbose \
+          -e ${downstream_path}/${exp_setup}/dev-best.ckpt \
+          -k $latest_checkpoint $paper_arg \
+          -u $upstream --json_file $json_file --update_results --current_row_downstream $current_row \
+          -d voxceleb1 \
+          -c "./downstream/voxceleb1/config.yaml"
+    fi
+fi
+
 

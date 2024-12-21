@@ -1,10 +1,13 @@
 import numpy as np 
 import os 
 import torchaudio
-
-CACHE_PATH = os.path.join(os.path.dirname(__file__), '.cache/')
-
 import torch
+
+torchaudio.set_audio_backend("sox_io")
+CACHE_PATH = os.path.join(os.path.dirname(__file__), '.cache/')
+print(f"torchaudio.list_audio_backends()  {torchaudio.list_audio_backends()}   ")
+current_backend = torchaudio.get_audio_backend()
+print(f"Current audio backend: {current_backend}")
 
 import numpy as np
 from torch.utils import data

@@ -24,7 +24,7 @@ optimizer:
 
 downstream_expert:
   datarc:
-    root: ../../../../groups/public/benchmark/IEMOCAP
+    root: /livingrooms/public/superb/emotion/IEMOCAP_full_release
     meta_data: ./downstream/emotion/meta_data
     test_fold: fold1
     pre_load: True

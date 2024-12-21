@@ -174,8 +174,8 @@ if __name__ == "__main__":
 
     # Paths to your two models for Theta M and Theta H
     model_paths = [
-        'result/pretrain/distill_only_mert-init-weight-from-hubert_base-models-simple-avg-pool-for-teacher-train-libri-960/states-epoch-25.ckpt',  # Theta M
-        'result/pretrain/DistilHuBERT_100hrs_libri_l1_cos/dev-dis-best-168-epoch-exp.ckpt',  # Change for Librispeech 960 one later on.
+        'result/pretrain/distill_mert_init_hubert_audioset_music4all_ls960/states-590000.ckpt',  # Theta M
+        'result/pretrain/distill_hubert_audioset_music4all_ls960/states-epoch-35.ckpt',  # Change for Librispeech 960 one later on.
     ]
 
     # result/pretrain/DistilHuBERT_100hrs_libri_l1_cos/dev-dis-best-168-epoch-exp.ckpt
@@ -184,7 +184,7 @@ if __name__ == "__main__":
     # Path to the base (Theta 0) model
     #base_model_path = 'path/to/initial_hubert_base_model.ckpt' ## missing this part..........
     # Path to save the combined model
-    save_path = f'result/pretrain/task_vector_dhubert_ls_100_weight_{args.lambda1}_and_mert_ls_960_weight_{args.lambda2}_both_init_hubert_both_same_seed/learning_by_addition.ckpt'
+    save_path = f'result/pretrain/task_vector_dhubert_ls_960_audioset_music4all_weight_{args.lambda1}_and_mert_ls_960_audioset_music4all_weight_{args.lambda2}_both_init_hubert_both_same_seed/learning_by_addition.ckpt'
     directory = os.path.dirname(save_path)
     if not os.path.exists(directory):
         os.makedirs(directory)

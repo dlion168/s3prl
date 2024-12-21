@@ -15,7 +15,7 @@ from metric_calculators import CovarianceMetric, MeanMetric
 from matching_functions import match_tensors_permute
 from matching_functions import compute_correlation
 from inspect import getmembers, isfunction
-import pdb
+import ipdb
 
 
 def contains_name(layer_name, node_list):
@@ -243,7 +243,6 @@ class ModelMerge(nn.Module):
                 #         nodes.append(f'qk{i}')
                 #     qk_flag = True
                 # populate metrics list 
-                pdb.set_trace()
                 if self.metrics is None:
                     self.metrics = {n: {k: v() for k, v in metric_classes.items()} for n in nodes}
                 
@@ -525,7 +524,7 @@ class ModelMerge(nn.Module):
         global_res_merge= None
         global_res_unmerge = None
 
-        special_cases_names = ['final_ln', 'attn_ln', 'emb_ln', 'q', 'k']
+        special_cases_names = ['final_ln', 'attn_ln', 'q', 'k']
         special_cases_nodes = [self.graphs[0].modules[name] for name in special_cases_names]
         qk_nodes = [self.graphs[0].modules[name] for name in ['q', 'k']]
 
@@ -541,10 +540,6 @@ class ModelMerge(nn.Module):
         else:
             nodes = list(self.metrics.keys())
             qk_flag = False
-            if self.graphs[0].qk == True:
-                qk_flag = True
-                for i in range(self.graphs[0].num_layers):
-                    nodes.remove(f'qk{i}')
             nodes.sort()
             print('computing corrs')
             corrs = self.compute_metric_corrs(nodes, res=res, no_corr=no_corr, qk=qk_flag)
@@ -555,7 +550,6 @@ class ModelMerge(nn.Module):
             #     torch.save(corrs, corrs_out)
         
         # corrs has all nonres nodes & the one res node. Unless this is sep, then it has all nodes
-
         last_node = nodes[-1]
         for node in tqdm(nodes, desc="Computing transformations: "):
             prev_node_layer = self.graphs[0].get_node_info(node-1)['layer']
@@ -679,20 +673,18 @@ class ModelMerge(nn.Module):
     # adding custom transformations here, for more control
     def apply_transformations_custom(self, merge_cls=False):
         qk_flag = False
-        if self.graphs[0].qk == True:
-            qk_flag = True
         qk_nodes = [self.graphs[0].modules[name] for name in ['q', 'k']]
 
-        emb_suff_0 = self.graphs[0].modules['emb']
-        emb_copy_0 = self.graphs[0].get_module(f'{self.graphs[0].enc_prefix}.{emb_suff_0}').weight.data
-        emb_copy_0 = torch.clone(emb_copy_0)
+        # emb_suff_0 = self.graphs[0].modules['emb']
+        # emb_copy_0 = self.graphs[0].get_module(f'{self.graphs[0].enc_prefix}.{emb_suff_0}').weight.data
+        # emb_copy_0 = torch.clone(emb_copy_0)
 
-        emb_suff_1 = self.graphs[1].modules['emb']
-        emb_copy_1= self.graphs[1].get_module(f'{self.graphs[1].enc_prefix}.{emb_suff_1}').weight.data
-        emb_copy_1 = torch.clone(emb_copy_1)
+        # emb_suff_1 = self.graphs[1].modules['emb']
+        # emb_copy_1= self.graphs[1].get_module(f'{self.graphs[1].enc_prefix}.{emb_suff_1}').weight.data
+        # emb_copy_1 = torch.clone(emb_copy_1)
         
         final_merger = None
-        graph_device = emb_copy_0.device
+        graph_device = "cuda"
 
         for node in self.merges:
             merges = self.merges[node]
@@ -730,6 +722,7 @@ class ModelMerge(nn.Module):
                     self.merge_node(preds[0], merger)
 
                 elif 'self_attn_layer_norm' in info['layer'] or 'attention.output.LayerNorm' in info['layer']:
+                    pdb.set_trace()
                     print('merging self-attn res')
                     # apply merge to ln
                     module = merger.graph.get_module(info['layer'])
@@ -965,7 +958,6 @@ class ModelMerge(nn.Module):
                                 sentence_level=sentence_level,
                                 special_toks=special_toks)
 
-        pdb.set_trace()
 
         _, _, cost_dict = self.compute_transformations(transform_fn, reduce_ratio=1 - 1. / len(self.graphs),
                                     permute_heads=permute_heads,

@@ -172,7 +172,7 @@ if __name__ == "__main__":
 
     # Paths to your two models for Theta M and Theta H
     model_paths = [
-        'result/pretrain/distill_mert_init_mert_music4all_avgpool/states-epoch-65.ckpt',  # Theta M
+        'result/pretrain/distill_only_mert-init-weight-from-hubert_base-models-simple-avg-pool-for-teacher-train-libri-960/states-epoch-25.ckpt',  # Theta M
         'result/pretrain/distilhubert-ls960-own/states-epoch-25.ckpt',  # Theta H
     ]
 
@@ -180,7 +180,7 @@ if __name__ == "__main__":
     # Path to the base (Theta 0) model
     #base_model_path = 'path/to/initial_hubert_base_model.ckpt' ## missing this part..........
     # Path to save the combined model
-    save_path = f'result/pretrain/task_vector_dhubert_960_and_mert_only_music4all_data_and_mert_init_{args.learn_which_modality}_tsv_weight_{args.weight}/learning_by_addition.ckpt'
+    save_path = f'result/pretrain/task_vector_dhubert_ls960_and_mert_ls960_both_init_hubert_{args.learn_which_modality}_tsv_weight_{args.weight}/learning_by_addition.ckpt'
     directory = os.path.dirname(save_path)
     if not os.path.exists(directory):
         os.makedirs(directory)
