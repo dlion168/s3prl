@@ -13,6 +13,7 @@ upstream=$5
 logfile=$6
 logfile_row=$7
 checkpoint_method=${8:-"hardcoded"}  # Default to "hardcoded" method
+custom_checkpoint=${9:-""}  # Default to "hardcoded" method
 
 
 
@@ -36,14 +37,24 @@ CHECKPOINT_DIR="/workspace/s3prl/s3prl/result/pretrain/${distilled_model_checkpo
 #latest_checkpoint=$(ls ${CHECKPOINT_DIR}/states-*.ckpt | sort -V | tail -n 1)
 #latest_checkpoint="result/pretrain/$distilled_model_checkpoint/learning_by_addition.ckpt" #  learning_by_addition_2nd_approach.ckpt     learning_by_addition.ckpt
 # Function to determine the latest checkpoint
+# Function to determine the latest checkpoint
 select_latest_checkpoint() {
   local method=$1
+  local custom=$2
   case $method in
     "list_based")
       echo "$(ls ${CHECKPOINT_DIR}/states-*.ckpt | sort -V | tail -n 1)"
       ;;
     "hardcoded")
       echo "${CHECKPOINT_DIR}/learning_by_addition.ckpt"  # Default hardcoded checkpoint
+      ;;
+    "custom")
+      if [ -n "$custom" ]; then
+        echo "$custom"  # Use the provided custom checkpoint
+      else
+        echo "Custom checkpoint not provided. Exiting." >&2
+        exit 1
+      fi
       ;;
     *)
       echo "Unknown checkpoint selection method: $method" >&2
@@ -52,7 +63,7 @@ select_latest_checkpoint() {
   esac
 }
 
-latest_checkpoint=$(select_latest_checkpoint $checkpoint_method)
+latest_checkpoint=$(select_latest_checkpoint $checkpoint_method $custom_checkpoint)
 echo "Loading the latest model: $latest_checkpoint"
 
 
