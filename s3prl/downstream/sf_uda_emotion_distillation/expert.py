@@ -19,6 +19,9 @@ from sklearn.metrics import classification_report
 from .dataset import prepare_datasets, collate_fn_padd
 from ..model import *
 
+from .specaug import SpecAug
+from .noise import AddNoise
+
 warnings.filterwarnings("ignore")
 
 
