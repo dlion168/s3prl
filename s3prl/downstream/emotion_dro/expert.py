@@ -43,9 +43,7 @@ def rms_gap(values):
     values = np.array(values)
     if len(values) == 0:
         return 0.0
-    mean_val = values.mean()
-    diff = values - mean_val
-    return math.sqrt(np.mean(diff**2))
+    return math.sqrt(np.mean(values**2))
 class DownstreamExpert(nn.Module):
     """
     training_mode (merged):
@@ -100,6 +98,7 @@ class DownstreamExpert(nn.Module):
 
         # Apply debiasing if chosen
         self.apply_debiasing(self.training_mode)
+        self.start_saving_ckpt_step = kwargs['start_saving_ckpt_step']
 
     def get_downstream_name(self):
         return self.fold.replace('fold', 'emotion')
@@ -225,6 +224,10 @@ class DownstreamExpert(nn.Module):
 
         # Apply weights directly (uniform=1 for non-RW, or actual weights for RW)
         per_sample_loss = per_sample_loss * sample_weights
+        
+        prediction_distribution = F.softmax(predicted_logits, dim=1)
+        predictions_binary = torch.where(prediction_distribution > self.k_thresold, 1.0, 0.0)
+        labels_binary = torch.where(labels > self.k_thresold, 1.0, 0.0)
 
         if self.training_mode in ["ERM", "DS", "RW"]:
             total_loss = per_sample_loss.mean()
@@ -243,71 +246,67 @@ class DownstreamExpert(nn.Module):
                 worst_L_g, worst_g = max(loss_g_list, key=lambda x: x[0])
                 total_loss = worst_L_g
         elif self.training_mode == "GR":
-            # predictions_binary, labels_binary, gender_labels are already torch tensors
-            # predictions_binary: (B, C)
-            # labels_binary: (B, C)
-            # gender_labels: (B,)
-
             gender_labels = gender_labels.to(device)
             unique_genders = torch.unique(gender_labels)
 
             TPR_diffs = []
             FPR_diffs = []
 
-            # Some small epsilon to avoid division by zero
-            eps = 1e-8
+            eps = 1e-8  # small value to avoid division by zero in tensors
 
             B, C = labels_binary.shape
             for c in range(C):
                 pred_c = predictions_binary[:, c]   # (B,)
                 label_c = labels_binary[:, c]       # (B,)
 
-                # Compute per-gender TPR & FPR
                 gender_TPR = {}
                 gender_FPR = {}
 
                 for g in unique_genders:
-                    mask = (gender_labels == g).float()  # (B,)
+                    g_int = int(g.item())
+                    mask = (gender_labels == g).float()  # Still a tensor
                     TP_g = (pred_c * label_c * mask).sum()
                     FN_g = ((1 - pred_c) * label_c * mask).sum()
                     FP_g = (pred_c * (1 - label_c) * mask).sum()
                     TN_g = ((1 - pred_c) * (1 - label_c) * mask).sum()
 
-                    # Compute TPR and FPR
+                    # Compute TPR and FPR with eps to avoid division by zero
                     TPR_g = TP_g / (TP_g + FN_g + eps)
                     FPR_g = FP_g / (FP_g + TN_g + eps)
 
-                    gender_TPR[g.item()] = TPR_g
-                    gender_FPR[g.item()] = FPR_g
+                    # TPR_g and FPR_g are now torch.Tensors
+                    gender_TPR[g_int] = TPR_g
+                    gender_FPR[g_int] = FPR_g
 
                 # Compute pairwise differences for TPR and FPR
                 g_list = list(gender_TPR.keys())
                 for i in range(len(g_list)):
                     for j in range(i+1, len(g_list)):
                         g1, g2 = g_list[i], g_list[j]
-                        # Differences are still tensors, so gradients can flow
+                        # Now these are guaranteed to be tensors
                         TPR_diff = (gender_TPR[g1] - gender_TPR[g2]).abs()
                         FPR_diff = (gender_FPR[g1] - gender_FPR[g2]).abs()
                         TPR_diffs.append(TPR_diff)
                         FPR_diffs.append(FPR_diff)
 
-            # Convert lists to tensors if they are not empty; if empty, set them to zero
+            # Compute RMS on tensors directly
             if len(TPR_diffs) == 0:
                 TPR_RMS_gap = torch.tensor(0.0, device=device)
             else:
                 TPR_diffs_tensor = torch.stack(TPR_diffs)
-                mean_TPR = TPR_diffs_tensor.mean()
-                TPR_RMS_gap = torch.sqrt(((TPR_diffs_tensor - mean_TPR)**2).mean())
+                TPR_RMS_gap = torch.sqrt((TPR_diffs_tensor**2).mean())
 
             if len(FPR_diffs) == 0:
                 FPR_RMS_gap = torch.tensor(0.0, device=device)
             else:
                 FPR_diffs_tensor = torch.stack(FPR_diffs)
-                mean_FPR = FPR_diffs_tensor.mean()
-                FPR_RMS_gap = torch.sqrt(((FPR_diffs_tensor - mean_FPR)**2).mean())
+                FPR_RMS_gap = torch.sqrt((FPR_diffs_tensor**2).mean())
 
             classification_loss = per_sample_loss.mean()
-            total_loss = classification_loss + self.lambda_GR * (TPR_RMS_gap + FPR_RMS_gap)
+            GR_loss = self.lambda_GR * (TPR_RMS_gap + FPR_RMS_gap) 
+            total_loss = classification_loss + GR_loss
+            records["GR_loss"].append(GR_loss)
+
         else:
             raise NotImplementedError(f"Unknown training mode: {self.training_mode}")
 
@@ -315,15 +314,6 @@ class DownstreamExpert(nn.Module):
         prediction_distribution = F.softmax(predicted_logits, dim=1)
         predictions_binary = torch.where(prediction_distribution > self.k_thresold, 1.0, 0.0)
         labels_binary = torch.where(labels > self.k_thresold, 1.0, 0.0)
-
-        if "all_predictions_binary" not in records:
-            records["all_predictions_binary"] = []
-            records["all_labels_binary"] = []
-            records["all_genders"] = []
-            records["filename"] = []
-            records["predict"] = []
-            records["truth"] = []
-            records["loss"] = []
 
         records["all_predictions_binary"].append(predictions_binary.cpu().numpy())
         records["all_labels_binary"].append(labels_binary.cpu().numpy())
@@ -372,13 +362,15 @@ class DownstreamExpert(nn.Module):
 
         # Average loss
         average_loss = torch.FloatTensor(records['loss']).mean().item()
-
+        GR_loss = torch.FloatTensor(records['GR_loss']).mean()
         # Log macro-f1, loss, acc
         metrics_to_log = {
             'macro-f1': macro_f1,
             'acc': acc,
             'loss': average_loss
         }
+        if self.training_mode == "GR":
+             metrics_to_log['GR_loss'] = GR_loss
 
         save_names = []
         for key, val in metrics_to_log.items():
@@ -386,7 +378,7 @@ class DownstreamExpert(nn.Module):
             with open(Path(self.expdir) / "log.log", 'a') as f:
                 print(f"{mode} {key}: {val}")
                 f.write(f'{mode} {key} at step {global_step}: {val}\n')
-            if key == 'loss' and mode == 'dev' and val < self.best_score:
+            if key == 'loss' and mode == 'dev' and val < self.best_score and ((self.start_saving_ckpt_step is None) or self.start_saving_ckpt_step < global_step) :
                 self.best_score = torch.ones(1)*val
                 with open(Path(self.expdir) / "log.log", 'a') as f:
                     f.write(f'New best on {mode} {key} at step {global_step}: {val}\n')
