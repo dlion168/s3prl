@@ -38,12 +38,13 @@ def class_balanced_softmax_cross_entropy_with_softtarget(logits, targets, weight
 
 def safe_div(a, b):
     return a / b if b > 0 else 0.0
-            
+
 def rms_gap(values):
     values = np.array(values)
     if len(values) == 0:
         return 0.0
     return math.sqrt(np.mean(values**2))
+
 class DownstreamExpert(nn.Module):
     """
     training_mode (merged):
@@ -51,7 +52,8 @@ class DownstreamExpert(nn.Module):
     - "GroupDRO": Group Distributionally Robust Optimization
     - "DS": Downsampling debiasing
     - "RW": Reweighting debiasing
-    - "GR": Gap Regularization debiasing using TPR difference and FPR difference
+    - "GR": Gap Regularization debiasing
+        - 此模式下可根據 config 中的 GR_target 設定要針對 TPR+FPR、僅 TPR 或僅 FPR 做 regularization。
     """
 
     def __init__(self, upstream_dim, downstream_expert, expdir, **kwargs):
@@ -79,8 +81,12 @@ class DownstreamExpert(nn.Module):
          self.k_thresold, 
          self.all_emotions) = prepare_datasets(self.datarc, self.config_path)
         
+        # -------------【新增】讀取 config.json 的 GR_target 設定 -------------
         with open(self.config_path, 'r') as f:
             self.config = json.load(f)
+        self.GR_target = self.config.get('GR_target', 'TPR+FPR')  
+        # 預設為 'TPR+FPR'，可在 config.json 裡設定為 "TPR" 或 "FPR"
+        # -------------------------------------------------------------
 
         model_cls = eval(self.modelrc['select'])
         model_conf = self.modelrc.get(self.modelrc['select'], {})
@@ -173,7 +179,7 @@ class DownstreamExpert(nn.Module):
                 self.train_dataset = WeightedDataset(self.train_dataset, weight_dict)
             print("[RW] Assigned reweighting to training samples.")
         else:
-            # ERM or GroupDRO: just assign uniform weights=1
+            # ERM or GroupDRO or GR: just assign uniform weights=1
             weight_dict = {i:1.0 for i in range(len(self.train_dataset))}
             self.train_dataset = WeightedDataset(self.train_dataset, weight_dict)
         self.dev_dataset = WeightedDataset(self.dev_dataset, weight_dict)
@@ -231,6 +237,7 @@ class DownstreamExpert(nn.Module):
 
         if self.training_mode in ["ERM", "DS", "RW"]:
             total_loss = per_sample_loss.mean()
+
         elif self.training_mode == "GroupDRO":
             gender_labels = gender_labels.to(device)
             unique_genders = torch.unique(gender_labels)
@@ -245,7 +252,9 @@ class DownstreamExpert(nn.Module):
             else:
                 worst_L_g, worst_g = max(loss_g_list, key=lambda x: x[0])
                 total_loss = worst_L_g
+
         elif self.training_mode == "GR":
+            # ------------【修改】依照 self.GR_target 分別計算 TPR, FPR的 regularization ----------------
             gender_labels = gender_labels.to(device)
             unique_genders = torch.unique(gender_labels)
 
@@ -274,7 +283,6 @@ class DownstreamExpert(nn.Module):
                     TPR_g = TP_g / (TP_g + FN_g + eps)
                     FPR_g = FP_g / (FP_g + TN_g + eps)
 
-                    # TPR_g and FPR_g are now torch.Tensors
                     gender_TPR[g_int] = TPR_g
                     gender_FPR[g_int] = FPR_g
 
@@ -283,13 +291,12 @@ class DownstreamExpert(nn.Module):
                 for i in range(len(g_list)):
                     for j in range(i+1, len(g_list)):
                         g1, g2 = g_list[i], g_list[j]
-                        # Now these are guaranteed to be tensors
                         TPR_diff = (gender_TPR[g1] - gender_TPR[g2]).abs()
                         FPR_diff = (gender_FPR[g1] - gender_FPR[g2]).abs()
                         TPR_diffs.append(TPR_diff)
                         FPR_diffs.append(FPR_diff)
 
-            # Compute RMS on tensors directly
+            # Compute RMS on TPR diffs and FPR diffs
             if len(TPR_diffs) == 0:
                 TPR_RMS_gap = torch.tensor(0.0, device=device)
             else:
@@ -303,9 +310,20 @@ class DownstreamExpert(nn.Module):
                 FPR_RMS_gap = torch.sqrt((FPR_diffs_tensor**2).mean())
 
             classification_loss = per_sample_loss.mean()
-            GR_loss = self.lambda_GR * (TPR_RMS_gap + FPR_RMS_gap) 
+
+            # 依照 config 中設定的 GR_target 來決定要加哪一種 regularization
+            if self.GR_target == "TPR+FPR":
+                GR_loss = self.lambda_GR * (TPR_RMS_gap + FPR_RMS_gap)
+            elif self.GR_target == "TPR":
+                GR_loss = self.lambda_GR * TPR_RMS_gap
+            elif self.GR_target == "FPR":
+                GR_loss = self.lambda_GR * FPR_RMS_gap
+            else:
+                raise NotImplementedError(f"Unknown GR target: {self.GR_target}")
+
             total_loss = classification_loss + GR_loss
             records["GR_loss"].append(GR_loss)
+            # -------------------------------------------------------------------------------------
 
         else:
             raise NotImplementedError(f"Unknown training mode: {self.training_mode}")
@@ -378,7 +396,7 @@ class DownstreamExpert(nn.Module):
             with open(Path(self.expdir) / "log.log", 'a') as f:
                 print(f"{mode} {key}: {val}")
                 f.write(f'{mode} {key} at step {global_step}: {val}\n')
-            if key == 'loss' and mode == 'dev' and val < self.best_score and ((self.start_saving_ckpt_step is None) or self.start_saving_ckpt_step < global_step) :
+            if key == 'loss' and mode == 'dev' and val < self.best_score and ((self.start_saving_ckpt_step is None) or self.start_saving_ckpt_step < global_step):
                 self.best_score = torch.ones(1)*val
                 with open(Path(self.expdir) / "log.log", 'a') as f:
                     f.write(f'New best on {mode} {key} at step {global_step}: {val}\n')
@@ -394,8 +412,6 @@ class DownstreamExpert(nn.Module):
             F1_diffs = []
 
             # Compute TPR, FPR, f1 per class per gender
-            # We'll have a structure: For each class c:
-            #   For each gender g in unique_genders: compute metrics and store
             for c in range(C):
                 pred_c = all_preds[:, c]
                 label_c = all_labels[:, c]
@@ -420,8 +436,7 @@ class DownstreamExpert(nn.Module):
 
                     gender_metrics[g] = (TPR_g, FPR_g, f1_g)
 
-                # Now compute differences between each pair of genders for this class
-                # If only two genders, it's straightforward; if more, do pairwise
+                # Pairwise differences
                 g_list = list(gender_metrics.keys())
                 for i in range(len(g_list)):
                     for j in range(i+1, len(g_list)):
@@ -484,4 +499,3 @@ class DownstreamExpert(nn.Module):
                 file.writelines(lines)
 
         return save_names
-
