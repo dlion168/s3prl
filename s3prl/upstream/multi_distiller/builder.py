@@ -50,6 +50,7 @@ class DistillerBuilder(nn.Module):
         self.no_grad = bool(strtobool(options["no_grad"]))
         self.permute_input = bool(strtobool(options["permute_input"]))
         # Set model config
+        print(f"config is : {self.config}")
         self.model_config = MultiDistillerConfig(self.config["multi_distiller"])
         self.hidden_size = self.model_config.encoder_embed_dim
         self.max_input_length = 0

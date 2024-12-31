@@ -5,6 +5,7 @@
 
 # S3PRL has no contribution to this file
 # The file was copied from fairseq to remove the dependency on the entire fairseq package
+########## this is the one used for merging #########
 
 import logging
 import math
@@ -17,9 +18,14 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+#from torch.nn.functional.F import multi_head_attention_forward
+from .functional_pytorch import multi_head_attention_forward
 from torch import Tensor
 
 logger = logging.getLogger(__name__)
+
+
+
 
 
 def rotate_half(x):
@@ -1143,7 +1149,7 @@ class MultiheadAttention(nn.Module):
                 )
 
             else:
-                return F.multi_head_attention_forward(
+                return multi_head_attention_forward(
                     query,
                     key,
                     value,
@@ -3211,6 +3217,7 @@ class ConformerEncoder(TransformerEncoder):
         return x, layer_results
 
 
+
 class TransformerSentenceEncoderLayer(nn.Module):
     """
     Implements a Transformer Encoder Layer used in BERT/XLM style pre-trained
@@ -3273,7 +3280,7 @@ class TransformerSentenceEncoderLayer(nn.Module):
 
         if self.layer_norm_first:
             x = self.self_attn_layer_norm(x)
-            x, attn = self.self_attn(
+            x, attn, pre_x = self.self_attn(
                 query=x,
                 key=x,
                 value=x,
@@ -3281,6 +3288,7 @@ class TransformerSentenceEncoderLayer(nn.Module):
                 attn_mask=self_attn_mask,
                 need_weights=False,
             )
+            self.attention_output = pre_x.clone()  # Add this to capture output pre-projection
             x = self.dropout1(x)
             x = residual + x
 
@@ -3295,13 +3303,14 @@ class TransformerSentenceEncoderLayer(nn.Module):
             x = self.dropout3(x)
             x = residual + x
         else:
-            x, attn = self.self_attn(
+            x, attn, pre_x = self.self_attn(
                 query=x,
                 key=x,
                 value=x,
                 key_padding_mask=self_attn_padding_mask,
                 need_weights=False,
             )
+            self.attention_output = pre_x.clone() 
 
             x = self.dropout1(x)
             x = residual + x

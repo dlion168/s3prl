@@ -3,7 +3,8 @@
 #PBS -j oe
 #PBS -N TASK_VECTOR
 #PBS -q normal
-#PBS -l walltime=15:43:58
+#PBS -l select=1:ncpus=64:ngpus=3
+#PBS -l walltime=19:43:58
 #PBS -m ae
 #PBS -M fabian.acustica@gmail.com
 #PBS -o /home/project/13003821/fabian/projects/multi_distiller/s3prl/s3prl/logfiles/downstream/testing-all.out
@@ -22,16 +23,13 @@ current_row=${current_row:-90}
 logfile_row=${logfile_row:-90}
 checkpoint_method=${checkpoint_method:-"hardcoded"}
 custom_checkpoint=${custom_checkpoint:-""}
-tasks=(${tasks:-"instrument_nsynth vocalset_technique_id aec_esc50 pitch_nsynth"})  # Default tasks as a space-separated string
-num_gpus=${num_gpus:-4}  # Default to 4 GPUs if not provided
-
 
 upstream="multi_distiller_local"  ### USE THIS OTHER PROJECT ID ALSO : 13003882
 #upstream="hubert_local"
 
 # Define tasks and log file paths
 # ABLATION TAKSS: # "asr" "sid" "vocalset_singer_id" "instrument_nsynth" "vocalset_technique_id" "aec_esc50" "pitch_nsynth"
-#tasks=("instrument_nsynth" "vocalset_technique_id" "aec_esc50" "pitch_nsynth")  # "asr" "sid" "emotion" "vocalset_singer_id" "vocalset_technique_id"   "ks" "ic" "instrument_nsynth"  "pitch_nsynth"  "aec_esc50"
+tasks=("instrument_nsynth" "vocalset_technique_id" "aec_esc50" "pitch_nsynth")  # "asr" "sid" "emotion" "vocalset_singer_id" "vocalset_technique_id"   "ks" "ic" "instrument_nsynth"  "pitch_nsynth"  "aec_esc50"
 log_dir="/home/project/13003821/fabian/projects/multi_distiller/s3prl/s3prl/logfiles/downstream/${distilled_model_checkpoint}"
 
 # Create log directories if they don't exist
@@ -45,20 +43,18 @@ module load singularity
 cd $PBS_O_WORKDIR
 echo "current dir is $PBS_O_WORKDIR"
 # Loop over tasks and launch each task on a separate GPU
-for ((i=0; i<num_gpus; i++)); do
-    task_index=$i
-    if [ $task_index -lt ${#tasks[@]} ]; then
-        task="${tasks[$task_index]}"
-        log_file="$log_dir/${task}_paper_method.log"
+for i in {0..3}; do
+#i=0
+    task="${tasks[$i]}"
+    log_file="$log_dir/${task}_paper_method.log"
 
-        echo "Starting task: $task on GPU $i with log file: $log_file"
+    echo "Starting task: $task on GPU $i with log file: $log_file"
 
-        # Assign task to a GPU
+    # Run the task in the background, assigning a different GPU to each job
     export CUDA_VISIBLE_DEVICES=$i
     CUDA_VISIBLE_DEVICES=$i singularity exec --nv --bind /home/project/13003821/fabian/projects/multi_distiller/s3prl/s3prl:/workspace/s3prl/s3prl,\
 /home/project/13003821/fabian/corpus/superb:/livingrooms/public/superb,/home/project/13003821/fabian/projects:/home/project/13003821/fabian/projects ../../s3prl_for_sslm_v2.sif \
     /workspace/s3prl/s3prl/run_inside_container_downstream.sh "$distilled_model_checkpoint" "$task" "$stage" "$current_row" "$upstream" "$log_file" "$logfile_row" "$checkpoint_method" "$custom_checkpoint" > "$log_file" 2>&1 &
-    fi
 done
 
 # Wait for all background tasks to complete

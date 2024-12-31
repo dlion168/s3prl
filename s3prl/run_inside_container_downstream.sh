@@ -30,7 +30,7 @@ echo "nvidia-smi "
 nvidia-smi
 
 # Install necessary Python packages
-pip install networkx pytorch-nlp transformers datasets==2.14.5 scipy==1.5.4 librosa==0.8.0 scikit-learn==0.24.2 matplotlib==3.3.4 modelscope==1.11.0
+pip install networkx pytorch-nlp transformers datasets==2.14.5 scipy==1.5.4 librosa==0.8.0 scikit-learn==0.24.2 matplotlib==3.3.4 modelscope==1.11.0 fvcore
 
 # Configure Git and pull the latest changes if necessary
 cd /workspace/s3prl
@@ -272,7 +272,7 @@ if [ $task == "asr" ]; then
       echo "$stage $task"
       # Training (finetune on downstream task) # weighted sum of enc hdden states.
       python run_downstream.py -m $stage -c "./downstream/asr/config.yaml" -u $upstream -k $latest_checkpoint $paper_arg -d asr --json_file $json_file --current_row_downstream $current_row \
-      -p ${downstream_path}/${exp_setup} --verbose --logfile $logfile --logfile_row_downstream $logfile_row \
+      -p ${downstream_path}/${exp_setup} --verbose --update_results --current_row_downstream $current_row  --logfile $logfile --logfile_row_downstream $logfile_row \
         -o "config.runner.gradient_accumulate_steps=1,,config.downstream_expert.datarc.train_batch_size=32,,config.downstream_expert.datarc.eval_batch_size=32,,\
         config.downstream_expert.datarc.bucket_file=./data/len_for_bucket"
 
