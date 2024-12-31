@@ -118,15 +118,26 @@ class DownstreamExpert(nn.Module):
             wav, lab, utt, gender = self.train_dataset[idx]
             class_idx = np.argmax(lab)
             class_gender_pairs.append((class_idx, gender, idx))
+        
+        dev_class_gender_pairs = []
+        for idx in range(len(self.dev_dataset)):
+            wav, lab, utt, gender = self.dev_dataset[idx]
+            class_idx = np.argmax(lab)
+            dev_class_gender_pairs.append((class_idx, gender, idx))
 
         counts = defaultdict(int)
         class_counts = defaultdict(int)
         # Group samples by class and gender
         class_genders = defaultdict(lambda: defaultdict(list))
+        dev_class_genders = defaultdict(lambda: defaultdict(list))
+        
         for (c, g, i) in class_gender_pairs:
             counts[(c,g)] += 1
             class_counts[c] += 1
             class_genders[c][g].append(i)
+        
+        for (c, g, i) in dev_class_gender_pairs:
+            dev_class_genders[c][g].append(i)
 
         if method == "DS":
             # Downsampling
@@ -149,8 +160,9 @@ class DownstreamExpert(nn.Module):
 
             self.train_dataset = Subset(self.train_dataset, new_indices)
             # After downsampling, assign uniform weights=1
-            weight_dict = {i:1.0 for i in range(len(self.train_dataset))}
+            weight_dict = {i:1.0 for i in range(max(len(self.train_dataset), len(self.dev_dataset), len(self.test_dataset)))}
             self.train_dataset = WeightedDataset(self.train_dataset, weight_dict)
+            self.dev_dataset = WeightedDataset(self.dev_dataset, weight_dict)
             print(f"[DS] Downsampled training set to {len(new_indices)} samples.")
 
         elif method == "RW":
@@ -158,8 +170,10 @@ class DownstreamExpert(nn.Module):
             if len(counts) == 0:
                 # No groups, uniform weights
                 weight_dict = {i:1.0 for i in range(len(self.train_dataset))}
+                dev_weight_dict = {i:1.0 for i in range(len(self.train_dataset))}
             else:
                 weight_dict = {}
+                dev_weight_dict = {}
                 # For each class c, find how many gender categories
                 # and total instances of class c is class_counts[c]
                 # G_c = number of genders for class c
@@ -173,14 +187,17 @@ class DownstreamExpert(nn.Module):
                         w = (sum_c / G_c) * (1.0 / group_count)
                         for idx_sample in idx_list:
                             weight_dict[idx_sample] = w
+                        for dev_idx_sample in dev_class_genders[c][g]:
+                            dev_weight_dict[dev_idx_sample] = w
                 self.train_dataset = WeightedDataset(self.train_dataset, weight_dict)
+                self.dev_dataset = WeightedDataset(self.dev_dataset, dev_weight_dict)
             print("[RW] Assigned reweighting to training samples.")
         else:
             # ERM or GroupDRO or GR: just assign uniform weights=1
             weight_dict = {i:1.0 for i in range(len(self.train_dataset))}
             self.train_dataset = WeightedDataset(self.train_dataset, weight_dict)
-        self.dev_dataset = WeightedDataset(self.dev_dataset, weight_dict)
-        self.test_dataset = WeightedDataset(self.test_dataset, weight_dict)
+            self.dev_dataset = WeightedDataset(self.dev_dataset, weight_dict)
+        self.test_dataset = WeightedDataset(self.test_dataset, {i:1.0 for i in range(len(self.test_dataset))})
 
     def _get_train_dataloader(self, dataset):
         sampler = DistributedSampler(dataset) if is_initialized() else None
