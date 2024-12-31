@@ -27,6 +27,7 @@ downstream_expert:
     #root: ./downstream/emotion/meta_data #./data/IEMOCAP/Audios #audios
     #meta_data: ./downstream/emotion/meta_data #./data/IEMOCAP/labels_consensus_1.csv #label
     root: /home/ycevan/emoCodec/original
+    biased: None
     test_fold: fold1
     corpus: CREMA-D #IMPROV #CREMA-D #IEMOCAP #
     p_or_s: Primary #Secondary # Primary
@@ -60,3 +61,4 @@ downstream_expert:
     lambda_diff: 1.0e-1
     lambda_adv: 0.8
     lambda_GR: 1.0
+    GR_target: TPR
