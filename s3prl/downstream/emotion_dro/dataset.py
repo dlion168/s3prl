@@ -189,9 +189,14 @@ class DataManager:
 
 def prepare_datasets(datarc, config_path):
     dam = DataManager(config_path)
+    biased = datarc.get('biased', None)
 
     audio_path = os.path.join(datarc['root'], datarc['corpus'], "Audios")
-    label_path = os.path.join(datarc['root'], datarc['corpus'], datarc['p_or_s'], 
+    if biased:
+        label_path = os.path.join(datarc['root'], datarc['corpus'], datarc['p_or_s'], biased,
+                                "labels_consensus_" + datarc['test_fold'].replace("fold", "") + ".csv")
+    else:
+        label_path = os.path.join(datarc['root'], datarc['corpus'], datarc['p_or_s'], 
                                "labels_consensus_" + datarc['test_fold'].replace("fold","") + ".csv")
 
     train_utts = dam.get_utt_list("train", label_path=label_path)

@@ -69,9 +69,6 @@ class DownstreamExpert(nn.Module):
         print(f"[Expert] - Using testing fold: \"{self.fold}\".")
 
         self.audio_path = os.path.join(self.datarc['root'], self.datarc['corpus'], "Audios")
-        self.labels_path = os.path.join(self.datarc['root'], self.datarc['corpus'],
-                                        self.datarc['p_or_s'], 
-                                        "labels_consensus_" + self.datarc['test_fold'].replace("fold", "") + ".csv")
         self.config_path = os.path.join(self.datarc['root'], self.datarc['corpus'], self.datarc['p_or_s'], "config.json")
 
         (self.train_dataset, 
