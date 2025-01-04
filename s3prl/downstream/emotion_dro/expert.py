@@ -22,11 +22,26 @@ from ..model import *
 
 warnings.filterwarnings("ignore")
 
+
 def class_balanced_softmax_cross_entropy_with_softtarget(logits, targets, weights, reduction='mean'):
-    weights = weights.unsqueeze(0).repeat(targets.shape[0], 1) * targets
-    weights = weights.sum(dim=1, keepdim=True).repeat(1, targets.shape[1])
-    log_probs = F.log_softmax(logits, dim=1)
-    batch_loss = -torch.sum(weights * targets * log_probs, dim=1)
+    """
+    依照 class_balanced + softtarget 設計的 cross entropy:
+      1. 將 class_weights 依照 targets (one-hot/soft) 進行逐樣本加權
+      2. 將加權後的目標分佈與 logits 做 cross entropy
+    輸入:
+      logits: (B, C)
+      targets: (B, C)
+      weights: (C,)  -> 各 class 的權重
+    輸出:
+      batch_loss: shape = (B,) or scalar (取決於 reduction)
+    """
+    expanded_w = weights.unsqueeze(0).repeat(targets.shape[0], 1)  # (B, C)
+    per_sample_class_weights = (expanded_w * targets).sum(dim=1, keepdim=True)  # (B,1)
+    broadcast_w = per_sample_class_weights.repeat(1, targets.shape[1])          # (B,C)
+
+    log_probs = F.log_softmax(logits, dim=1)                                   # (B,C)
+    batch_loss = -torch.sum(broadcast_w * targets * log_probs, dim=1)          # (B,)
+
     if reduction == 'none':
         return batch_loss
     elif reduction == 'mean':
@@ -35,6 +50,34 @@ def class_balanced_softmax_cross_entropy_with_softtarget(logits, targets, weight
         return torch.sum(batch_loss)
     else:
         raise NotImplementedError('Unsupported reduction mode.')
+
+
+def class_balanced_generalized_cross_entropy_loss(logits, targets, weights, q=0.7, reduction='mean'):
+    """
+    依照 LfF 的 Generalized Cross Entropy (GCE) 設計，但增添 class_balanced，
+    GCE(p, y) = \sum_{i=1}^{C} [ w_i * y_i * (1 - p_i^q)/q ] 
+    其中:
+    - p_i = softmax(logits)[..., i]
+    - w_i = weights[i]
+    - y_i = targets[..., i]
+    """
+    prob = F.softmax(logits, dim=1)              # (B, C)
+    expanded_w = weights.unsqueeze(0).repeat(targets.shape[0], 1)  # (B, C)
+    weighted_targets = expanded_w * targets      # (B, C)
+
+    one_minus_prob_q = (1.0 - prob.pow(q))       # (B, C)
+    gce_each_class = weighted_targets * one_minus_prob_q / q  # (B, C)
+    loss_per_sample = torch.sum(gce_each_class, dim=1)        # (B,)
+
+    if reduction == 'none':
+        return loss_per_sample
+    elif reduction == 'mean':
+        return loss_per_sample.mean()
+    elif reduction == 'sum':
+        return loss_per_sample.sum()
+    else:
+        raise NotImplementedError('Unsupported reduction mode.')
+
 
 def safe_div(a, b):
     return a / b if b > 0 else 0.0
@@ -53,7 +96,7 @@ class DownstreamExpert(nn.Module):
     - "DS": Downsampling debiasing
     - "RW": Reweighting debiasing
     - "GR": Gap Regularization debiasing
-        - 此模式下可根據 config 中的 GR_target 設定要針對 TPR+FPR、僅 TPR 或僅 FPR 做 regularization。
+    - "LfF": Learning from Failure (newly added)
     """
 
     def __init__(self, upstream_dim, downstream_expert, expdir, **kwargs):
@@ -61,9 +104,20 @@ class DownstreamExpert(nn.Module):
         self.upstream_dim = upstream_dim
         self.datarc = downstream_expert['datarc']
         self.modelrc = downstream_expert['modelrc']
-        self.training_mode = downstream_expert['debias'].get('training_mode', 'ERM')  
-        # Possible values: "ERM", "GroupDRO", "DS", "RW", "GR"
+        self.training_mode = downstream_expert['debias'].get('training_mode', 'ERM')
+
+        # LfF 相關超參數 (例如 q 值, EMA decay等)
+        self.lff_q = downstream_expert['debias'].get('lff_q', 0.7)
+        self.lff_ema_alpha = 0.7  # <- 固定 exponential decay 超參數
+
         self.lambda_GR = downstream_expert['debias'].get('lambda_GR', 1.0)
+        self.lambda_GDRO = downstream_expert['debias'].get('lambda_GDRO', 0.0)
+        
+        # -------------- LVR 相關超參數 --------------
+        self.omega_LVR = downstream_expert['debias'].get('omega_LVR', 0.3)
+        self.lambda_LVR = downstream_expert['debias'].get('lambda_LVR', 0.1)
+        self.enable_center_cls = downstream_expert['debias'].get('enable_center_cls', True)
+        # ------------------------------------------
 
         self.fold = self.datarc.get('test_fold') or kwargs.get("downstream_variant")
         print(f"[Expert] - Using testing fold: \"{self.fold}\".")
@@ -88,6 +142,7 @@ class DownstreamExpert(nn.Module):
         model_cls = eval(self.modelrc['select'])
         model_conf = self.modelrc.get(self.modelrc['select'], {})
 
+        # ---------------------- Debiased Model ----------------------
         self.projector = nn.Linear(upstream_dim, self.modelrc['projector_dim'])
         self.model = model_cls(
             input_dim=self.modelrc['projector_dim'],
@@ -95,7 +150,21 @@ class DownstreamExpert(nn.Module):
             **model_conf,
         )
 
+        # --------------------- Biased Model (for LfF) ---------------------
+        self.projector_b = nn.Linear(upstream_dim, self.modelrc['projector_dim'])
+        self.model_b = model_cls(
+            input_dim=self.modelrc['projector_dim'],
+            output_dim=len(self.config['categorical']["emo_type"]),
+            **model_conf,
+        )
+
+        # LfF 執行時，我們會在 forward() 中用到的 EMA buffer (更新於每個 batch)
+        self.ema_loss_b = None
+        self.ema_loss_d = None
+
+        # 給其他模式 (ERM / RW / DS / GroupDRO / GR) 用的損失函式
         self.objective = class_balanced_softmax_cross_entropy_with_softtarget
+
         self.expdir = expdir
         self.register_buffer('best_score', torch.ones(1)*99999)
 
@@ -110,7 +179,7 @@ class DownstreamExpert(nn.Module):
         """
         For DS (downsampling), we subset the dataset.
         For RW (reweighting), we wrap the dataset with WeightedDataset using computed weights.
-        For ERM/GroupDRO/GR, we also wrap with WeightedDataset, but assign equal weights=1.
+        For ERM/GroupDRO/GR/LfF: uniform weights=1
         """
         # Collect group info
         class_gender_pairs = []
@@ -127,39 +196,35 @@ class DownstreamExpert(nn.Module):
 
         counts = defaultdict(int)
         class_counts = defaultdict(int)
-        # Group samples by class and gender
         class_genders = defaultdict(lambda: defaultdict(list))
         dev_class_genders = defaultdict(lambda: defaultdict(list))
+        self.gender_count = defaultdict(int)
         
         for (c, g, i) in class_gender_pairs:
             counts[(c,g)] += 1
             class_counts[c] += 1
+            self.gender_count[g] += 1
             class_genders[c][g].append(i)
-        
+
         for (c, g, i) in dev_class_gender_pairs:
             dev_class_genders[c][g].append(i)
 
         if method == "DS":
             # Downsampling
             if len(class_gender_pairs) == 0:
-                # If no counts (empty), just assign equal weights to all instances
                 weight_dict = {i:1.0 for i in range(len(self.train_dataset))}
                 self.train_dataset = WeightedDataset(self.train_dataset, weight_dict)
                 return
 
             new_indices = []
-            # For each class c, find the minimum count across all genders and downsample accordingly
             for c, gender_dict in class_genders.items():
-                # Find the minimum count for this class across all genders
                 min_count_class = min(len(idx_list) for idx_list in gender_dict.values())
-                # Downsample each gender of this class to min_count_class
                 for g, idx_list in gender_dict.items():
                     random.shuffle(idx_list)
                     chosen = idx_list[:min_count_class]
                     new_indices.extend(chosen)
 
             self.train_dataset = Subset(self.train_dataset, new_indices)
-            # After downsampling, assign uniform weights=1
             weight_dict = {i:1.0 for i in range(max(len(self.train_dataset), len(self.dev_dataset), len(self.test_dataset)))}
             self.train_dataset = WeightedDataset(self.train_dataset, weight_dict)
             self.dev_dataset = WeightedDataset(self.dev_dataset, weight_dict)
@@ -168,32 +233,28 @@ class DownstreamExpert(nn.Module):
         elif method == "RW":
             # Reweighting
             if len(counts) == 0:
-                # No groups, uniform weights
                 weight_dict = {i:1.0 for i in range(len(self.train_dataset))}
                 dev_weight_dict = {i:1.0 for i in range(len(self.train_dataset))}
             else:
                 weight_dict = {}
                 dev_weight_dict = {}
-                # For each class c, find how many gender categories
-                # and total instances of class c is class_counts[c]
-                # G_c = number of genders for class c
                 for c, gender_dict in class_genders.items():
-                    G_c = len(gender_dict)            # number_of_genders_for_c
-                    sum_c = class_counts[c]           # total instances with class c
-
+                    G_c = len(gender_dict)
+                    sum_c = class_counts[c]
                     for g, idx_list in gender_dict.items():
                         group_count = counts[(c,g)]
-                        # w = (class_counts[c]/G_c) * (1.0 / counts[(c,g)])
                         w = (sum_c / G_c) * (1.0 / group_count)
                         for idx_sample in idx_list:
                             weight_dict[idx_sample] = w
                         for dev_idx_sample in dev_class_genders[c][g]:
                             dev_weight_dict[dev_idx_sample] = w
+
                 self.train_dataset = WeightedDataset(self.train_dataset, weight_dict)
                 self.dev_dataset = WeightedDataset(self.dev_dataset, dev_weight_dict)
             print("[RW] Assigned reweighting to training samples.")
+
         else:
-            # ERM or GroupDRO or GR: just assign uniform weights=1
+            # ERM, GroupDRO, GR, LfF: just assign uniform weights=1
             weight_dict = {i:1.0 for i in range(len(self.train_dataset))}
             self.train_dataset = WeightedDataset(self.train_dataset, weight_dict)
             self.dev_dataset = WeightedDataset(self.dev_dataset, weight_dict)
@@ -235,24 +296,91 @@ class DownstreamExpert(nn.Module):
         device = features[0].device
         features_len = torch.IntTensor([len(feat) for feat in features]).to(device)
         padded_features = pad_sequence(features, batch_first=True).to(device)
-        projected_features = self.projector(padded_features)
-        predicted_logits, hidden_states = self.model(projected_features, features_len)
         labels = labels.to(device)
         sample_weights = sample_weights.to(device)
 
-        per_sample_loss = self.objective(predicted_logits, labels, self.class_balanced_weights.to(device), reduction='none')
+        # Debiased Model forward
+        projected_features = self.projector(padded_features)
+        logits_debiased, _ = self.model(projected_features, features_len)
 
-        # Apply weights directly (uniform=1 for non-RW, or actual weights for RW)
-        per_sample_loss = per_sample_loss * sample_weights
-        
-        prediction_distribution = F.softmax(predicted_logits, dim=1)
-        predictions_binary = torch.where(prediction_distribution > self.k_thresold, 1.0, 0.0)
-        labels_binary = torch.where(labels > self.k_thresold, 1.0, 0.0)
+        # ------------------------- LfF 模式 --------------------------
+        if self.training_mode == "LfF":
+            # 1) Biased Model forward
+            projected_b = self.projector_b(padded_features)
+            logits_b, _ = self.model_b(projected_b, features_len)
 
-        if self.training_mode in ["ERM", "DS", "RW"]:
+            # GCE loss (class-balanced)
+            gce_loss_b = class_balanced_generalized_cross_entropy_loss(
+                logits_b, 
+                labels, 
+                self.class_balanced_weights.to(device), 
+                q=self.lff_q, 
+                reduction='none'
+            )  # (B,)
+            loss_biased = gce_loss_b.mean()
+
+            # 2) Debiased Model loss (Weighted CE)
+            ce_loss_b = class_balanced_softmax_cross_entropy_with_softtarget(
+                logits_b,
+                labels,
+                self.class_balanced_weights.to(device),
+                reduction='none'
+            )  # (B,)
+            ce_loss_d = class_balanced_softmax_cross_entropy_with_softtarget(
+                logits_debiased,
+                labels,
+                self.class_balanced_weights.to(device),
+                reduction='none'
+            )  # (B,)
+
+            # ====== EMA Trick for stable training ======
+            # 先更新並維護各個 sample 的 EMA
+            with torch.no_grad():
+                # 若尚未初始化，直接用本 batch 的 loss 當起始值
+                if self.ema_loss_b is None:
+                    self.ema_loss_b = ce_loss_b.mean(0).detach()
+                    self.ema_loss_d = ce_loss_d.mean(0).detach()
+                else:
+                    # Exponential Moving Average (element-wise)
+                    alpha = self.lff_ema_alpha
+                    self.ema_loss_b = alpha * self.ema_loss_b + (1 - alpha) * ce_loss_b.mean(0).detach()
+                    self.ema_loss_d = alpha * self.ema_loss_d + (1 - alpha) * ce_loss_d.mean(0).detach()
+
+            # 利用 EMA 後的 loss 來計算相對難度
+            denom = self.ema_loss_b + self.ema_loss_d + 1e-8  # shape=(B,)
+            weights = self.ema_loss_b / denom                # shape=(B,)
+
+            # Weighted Cross Entropy for Debiased Model
+            loss_debiased = (weights * ce_loss_d).mean()
+
+            records["LfF_debiased_loss"].append(loss_debiased)
+            records["LfF_biased_loss"].append(loss_biased)
+            
+            total_loss = loss_biased + loss_debiased
+            predicted_logits = logits_debiased
+
+        # --------------------- 其他模式: ERM / DS / RW ---------------------
+        elif self.training_mode in ["ERM", "DS", "RW"]:
+            per_sample_loss = self.objective(
+                logits_debiased, 
+                labels, 
+                self.class_balanced_weights.to(device), 
+                reduction='none'
+            )
+            per_sample_loss = per_sample_loss * sample_weights
             total_loss = per_sample_loss.mean()
+            predicted_logits = logits_debiased
 
+        # -------------------- 其他模式: GroupDRO ---------------------------
         elif self.training_mode == "GroupDRO":
+            per_sample_loss = self.objective(
+                logits_debiased, 
+                labels, 
+                self.class_balanced_weights.to(device), 
+                reduction='none'
+            )
+            per_sample_loss = per_sample_loss * sample_weights
+
             gender_labels = gender_labels.to(device)
             unique_genders = torch.unique(gender_labels)
             loss_g_list = []
@@ -260,47 +388,58 @@ class DownstreamExpert(nn.Module):
                 mask = (gender_labels == g)
                 if mask.sum() > 0:
                     group_loss = per_sample_loss[mask].mean()
-                    loss_g_list.append((group_loss, g))
+                    loss_g_list.append((group_loss + self.lambda_GDRO / math.sqrt(self.gender_count[g.item()]), g.item()))
             if len(loss_g_list) == 0:
                 total_loss = per_sample_loss.mean()
             else:
                 worst_L_g, worst_g = max(loss_g_list, key=lambda x: x[0])
                 total_loss = worst_L_g
 
+            predicted_logits = logits_debiased
+
+        # -------------------- 其他模式: GR ---------------------------
         elif self.training_mode == "GR":
-            # ------------【修改】依照 self.GR_target 分別計算 TPR, FPR的 regularization ----------------
+            per_sample_loss = self.objective(
+                logits_debiased, 
+                labels, 
+                self.class_balanced_weights.to(device), 
+                reduction='none'
+            )
+            per_sample_loss = per_sample_loss * sample_weights
+            classification_loss = per_sample_loss.mean()
+
+            prediction_distribution = F.softmax(logits_debiased, dim=1)
+            predictions_binary = torch.where(prediction_distribution > self.k_thresold, 1.0, 0.0)
+            labels_binary = torch.where(labels > self.k_thresold, 1.0, 0.0)
+
             gender_labels = gender_labels.to(device)
             unique_genders = torch.unique(gender_labels)
 
             TPR_diffs = []
             FPR_diffs = []
-
-            eps = 1e-8  # small value to avoid division by zero in tensors
-
+            eps = 1e-8
             B, C = labels_binary.shape
             for c in range(C):
-                pred_c = predictions_binary[:, c]   # (B,)
-                label_c = labels_binary[:, c]       # (B,)
+                pred_c = predictions_binary[:, c]
+                label_c = labels_binary[:, c]
 
                 gender_TPR = {}
                 gender_FPR = {}
 
                 for g in unique_genders:
                     g_int = int(g.item())
-                    mask = (gender_labels == g).float()  # Still a tensor
+                    mask = (gender_labels == g).float()
                     TP_g = (pred_c * label_c * mask).sum()
                     FN_g = ((1 - pred_c) * label_c * mask).sum()
                     FP_g = (pred_c * (1 - label_c) * mask).sum()
                     TN_g = ((1 - pred_c) * (1 - label_c) * mask).sum()
 
-                    # Compute TPR and FPR with eps to avoid division by zero
                     TPR_g = TP_g / (TP_g + FN_g + eps)
                     FPR_g = FP_g / (FP_g + TN_g + eps)
 
                     gender_TPR[g_int] = TPR_g
                     gender_FPR[g_int] = FPR_g
 
-                # Compute pairwise differences for TPR and FPR
                 g_list = list(gender_TPR.keys())
                 for i in range(len(g_list)):
                     for j in range(i+1, len(g_list)):
@@ -310,7 +449,6 @@ class DownstreamExpert(nn.Module):
                         TPR_diffs.append(TPR_diff)
                         FPR_diffs.append(FPR_diff)
 
-            # Compute RMS on TPR diffs and FPR diffs
             if len(TPR_diffs) == 0:
                 TPR_RMS_gap = torch.tensor(0.0, device=device)
             else:
@@ -323,9 +461,6 @@ class DownstreamExpert(nn.Module):
                 FPR_diffs_tensor = torch.stack(FPR_diffs)
                 FPR_RMS_gap = torch.sqrt((FPR_diffs_tensor**2).mean())
 
-            classification_loss = per_sample_loss.mean()
-
-            # 依照 config 中設定的 GR_target 來決定要加哪一種 regularization
             if self.GR_target == "TPR+FPR":
                 GR_loss = self.lambda_GR * (TPR_RMS_gap + FPR_RMS_gap)
             elif self.GR_target == "TPR":
@@ -337,12 +472,121 @@ class DownstreamExpert(nn.Module):
 
             total_loss = classification_loss + GR_loss
             records["GR_loss"].append(GR_loss)
-            # -------------------------------------------------------------------------------------
+            records["emotion_loss"].append(classification_loss)
+            predicted_logits = logits_debiased
+            
+        elif self.training_mode == "LVR":
+            """
+            1) 先做 classification loss
+            2) 為每個類別 c 計算 batch center (avgZ_c)，然後與前一 batch 的 center 做線性插值: 
+               C_i^b = (1 - ω)*avgZ_c + ω*C_i^{b-1}
+            3) 計算 L_r = ∑_i ∑_r ∑_j ( z_jr^i - c_j^i )^2, 
+               (這裡對所有屬於類別 i 的樣本 r 做 L2-distance 到 center i)
+            4) (可選) L_c: 把各 center 再丟進 model 做分類
+            5) total_loss = classification_loss + lambda_LVR * L_r + L_c
+            """
+            # (1) Classification loss
+            per_sample_loss = self.objective(
+                logits_debiased, 
+                labels, 
+                self.class_balanced_weights.to(device), 
+                reduction='none'
+            )
+            per_sample_loss = per_sample_loss * sample_weights
+            classification_loss = per_sample_loss.mean()
+
+            B, C = labels.shape
+            # Multi-label -> 二元: label[i,c]=1表示樣本i屬於類別c
+            labels_binary = torch.where(labels > self.k_thresold, 1.0, 0.0)
+
+            # (2) 計算 batch center + 平滑
+            centers = []
+            center_exists = []
+            for c_idx in range(C):
+                mask_c = (labels_binary[:, c_idx] == 1.0)
+                if mask_c.sum() == 0:
+                    centers.append(None)
+                    center_exists.append(False)
+                    continue
+                z_in_class_c = projected_features[mask_c]  # shape=(n_c, D)
+                if z_in_class_c.size(0) == 1:
+                    avgZ_c = z_in_class_c[0]
+                else:
+                    avgZ_c = z_in_class_c.mean(dim=0)
+
+                # 取上一 batch 的 center 進行平滑
+                if c_idx in self.lvr_previous_centers:
+                    prev_center_c = self.lvr_previous_centers[c_idx].to(device)
+                    smoothed_center = (1.0 - self.omega_LVR)*avgZ_c + self.omega_LVR*prev_center_c
+                else:
+                    # 目前還沒有上一 batch center -> 直接用平均
+                    smoothed_center = avgZ_c
+
+                centers.append(smoothed_center)
+                center_exists.append(True)
+
+            # (3) 計算 regularization loss L_r
+            L_r = torch.tensor(0.0, device=device)
+            for c_idx in range(C):
+                if not center_exists[c_idx]:
+                    continue
+                mask_c = (labels_binary[:, c_idx] == 1.0)
+                z_in_class_c = projected_features[mask_c]
+                if z_in_class_c.size(0) == 0:
+                    continue
+                center_c = centers[c_idx]  # (D,)
+                diff = z_in_class_c - center_c.unsqueeze(0)  # shape=(n_c, D)
+                dist_sq = (diff**2).sum(dim=1)               # shape=(n_c,)
+                L_r += dist_sq.mean()
+
+            # (4) (可選) center 的分類 L_c
+            L_c = torch.tensor(0.0, device=device)
+            if self.enable_center_cls:
+                center_features = []
+                center_labels = []
+                for c_idx in range(C):
+                    if not center_exists[c_idx]:
+                        continue
+                    center_c = centers[c_idx]
+                    center_features.append(center_c)
+                    oh = torch.zeros(C, device=device)
+                    oh[c_idx] = 1.0
+                    center_labels.append(oh)
+
+                if len(center_features) > 0:
+                    center_features = torch.stack(center_features, dim=0)  # (num_centers, D)
+                    center_len = torch.ones(center_features.size(0), dtype=torch.int32, device=device)
+                    logits_center, _ = self.model(center_features, center_len)
+                    center_labels = torch.stack(center_labels, dim=0)      # (num_centers, C)
+                    L_c = self.objective(
+                        logits_center,
+                        center_labels,
+                        self.class_balanced_weights.to(device),
+                        reduction='mean'
+                    )
+
+            # (5) 總損失
+            total_loss = classification_loss + self.lambda_LVR * L_r + L_c
+            predicted_logits = logits_debiased
+
+            # (6) 更新 self.lvr_previous_centers
+            #     若該類別存在於本 batch，則存入 centers[c_idx]
+            for c_idx in range(C):
+                if center_exists[c_idx]:
+                    # 存 CPU 以免顯存累積
+                    self.lvr_previous_centers[c_idx] = centers[c_idx].detach().cpu()
+
+            # 額外記錄以便觀察
+            records["LVR_loss"] = records.get("LVR_loss", [])
+            records["LVR_loss"].append(L_r.item())
+            if self.enable_center_cls:
+                records["LVR_center_loss"] = records.get("LVR_center_loss", [])
+                records["LVR_center_loss"].append(L_c.item())
 
         else:
             raise NotImplementedError(f"Unknown training mode: {self.training_mode}")
 
-        # Compute binary predictions
+        # 統一計算並記錄預測結果
         prediction_distribution = F.softmax(predicted_logits, dim=1)
         predictions_binary = torch.where(prediction_distribution > self.k_thresold, 1.0, 0.0)
         labels_binary = torch.where(labels > self.k_thresold, 1.0, 0.0)
@@ -354,7 +598,6 @@ class DownstreamExpert(nn.Module):
         else:
             records["all_genders"].append(np.zeros((len(labels_binary),), dtype=np.int64))
 
-        # Store loss for later averaging
         records["loss"].append(total_loss.item())
         records["filename"] += filenames
 
@@ -371,13 +614,11 @@ class DownstreamExpert(nn.Module):
     def log_records(self, mode, records, logger, global_step, **kwargs):
         # Compute macro-f1 and acc here
         all_preds = np.concatenate(records["all_predictions_binary"], axis=0)  # (N, C)
-        all_labels = np.concatenate(records["all_labels_binary"], axis=0)       # (N, C)
+        all_labels = np.concatenate(records["all_labels_binary"], axis=0)      # (N, C)
 
-        # macro-f1 from classification_report
         reprot_dict = classification_report(all_labels, all_preds, target_names=self.all_emotions, output_dict=True)
         macro_f1 = reprot_dict['macro avg']['f1-score']
 
-        # acc by one-vs-all accuracy
         N, C = all_labels.shape
         acc_list = []
         for c in range(C):
@@ -388,21 +629,23 @@ class DownstreamExpert(nn.Module):
             FN = np.sum((pred_c == 0) & (label_c == 1))
             TN = np.sum((pred_c == 0) & (label_c == 0))
             denom = (TP + TN + FP + FN)
-            accuracy_c = (TP + TN) / denom if denom > 0 else 0
+            accuracy_c = (TP + TN) / denom if denom > 0 else 0.0
             acc_list.append(accuracy_c)
         acc = np.mean(acc_list) if len(acc_list) > 0 else 0.0
 
-        # Average loss
         average_loss = torch.FloatTensor(records['loss']).mean().item()
-        GR_loss = torch.FloatTensor(records['GR_loss']).mean()
-        # Log macro-f1, loss, acc
+        if "GR_loss" in records and len(records["GR_loss"])>0:
+            GR_loss = torch.FloatTensor(records['GR_loss']).mean()
+        else:
+            GR_loss = 0.0
+
         metrics_to_log = {
             'macro-f1': macro_f1,
             'acc': acc,
             'loss': average_loss
         }
         if self.training_mode == "GR":
-             metrics_to_log['GR_loss'] = GR_loss
+            metrics_to_log['GR_loss'] = GR_loss
 
         save_names = []
         for key, val in metrics_to_log.items():
@@ -420,17 +663,14 @@ class DownstreamExpert(nn.Module):
             all_genders = np.concatenate(records["all_genders"], axis=0)  # (N,)
             unique_genders = np.unique(all_genders)
 
-            # To store differences for each metric across genders and classes
             TPR_diffs = []
             FPR_diffs = []
             F1_diffs = []
 
-            # Compute TPR, FPR, f1 per class per gender
             for c in range(C):
                 pred_c = all_preds[:, c]
                 label_c = all_labels[:, c]
 
-                # Compute per-gender metrics
                 gender_metrics = {}
                 for g in unique_genders:
                     mask = (all_genders == g)
@@ -450,7 +690,6 @@ class DownstreamExpert(nn.Module):
 
                     gender_metrics[g] = (TPR_g, FPR_g, f1_g)
 
-                # Pairwise differences
                 g_list = list(gender_metrics.keys())
                 for i in range(len(g_list)):
                     for j in range(i+1, len(g_list)):
@@ -463,7 +702,6 @@ class DownstreamExpert(nn.Module):
                         FPR_diffs.append(FPR_diff)
                         F1_diffs.append(F1_diff)
 
-            # Compute RMS and max for each metric
             rms_tpr_gap = rms_gap(TPR_diffs)
             rms_fpr_gap = rms_gap(FPR_diffs)
             rms_f1_gap = rms_gap(F1_diffs)

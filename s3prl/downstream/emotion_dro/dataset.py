@@ -222,7 +222,11 @@ def prepare_datasets(datarc, config_path):
     weights = (1.0 - beta) / effective_num
     class_balanced_weights = (weights / torch.sum(weights)) * no_of_classes
 
-    train_wavs_np_path = os.path.join(datarc['root'], datarc['corpus'], datarc['p_or_s'], 
+    if biased:
+        train_wavs_np_path = os.path.join(datarc['root'], datarc['corpus'], datarc['p_or_s'], biased,
+                                      "Train_wavs_numpy_" + datarc['test_fold'] + ".pkl")
+    else :
+        train_wavs_np_path = os.path.join(datarc['root'], datarc['corpus'], datarc['p_or_s'], 
                                       "Train_wavs_numpy_" + datarc['test_fold'] + ".pkl")
     if not os.path.exists(train_wavs_np_path):
         print("Saving Wavs Numpy files:", train_wavs_np_path)

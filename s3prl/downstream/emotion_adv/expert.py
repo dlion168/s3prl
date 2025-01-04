@@ -18,6 +18,7 @@ from sklearn.metrics import classification_report
 
 from .dataset import prepare_datasets, collate_fn_padd
 from ..model import *
+from collections import defaultdict
 
 # Suppress warnings for cleaner log outputs
 warnings.filterwarnings("ignore")
@@ -162,7 +163,16 @@ class DownstreamExpert(nn.Module):
 
         self.expdir = expdir
         self.register_buffer('best_score', torch.ones(1) * 99999)
-
+        
+        gender_count = defaultdict(int)
+        for idx in range(len(self.train_dataset)):
+            wav, lab, utt, g = self.train_dataset[idx]
+            gender_count[g] += 1
+        
+        total_genders = len(gender_count)
+        # Compute gender-specific weights
+        self.gender_weights = {g: (len(self.train_dataset) / total_genders / count) 
+                          for g, count in gender_count.items()}
 
     def get_downstream_name(self):
         return self.fold.replace('fold', 'emotion')
@@ -250,11 +260,22 @@ class DownstreamExpert(nn.Module):
                 valid_labels = gender_labels[valid_mask]
 
                 # Adversarial prediction
-                adv_features = torch.mean(valid_features, dim=1)    
-                adv_feature = self.adv_encoders[idx](adv_features)
-                reversed_features = self.grl(adv_feature)
-                adv_pred = self.adv_classifiers[idx](reversed_features)
-                adv_loss = self.gender_criterion(adv_pred.squeeze(1), valid_labels.float())
+                adv_features = torch.mean(valid_features, dim=1) 
+                reversed_features = self.grl(adv_features)   
+                adv_feature = self.adv_encoders[idx](reversed_features)
+                adv_pred = self.adv_classifiers[idx](adv_feature)
+                adv_loss = 0  # Initialize weighted adversarial loss
+                for g, weight in self.gender_weights.items():
+                    # Mask for current gender
+                    gender_mask = (valid_labels == g)
+                    if gender_mask.sum() > 0:
+                        # Calculate loss for the current gender
+                        gender_adv_loss = self.gender_criterion(
+                            adv_pred[gender_mask].squeeze(1), 
+                            valid_labels[gender_mask].float()
+                        )
+                        # Weight the loss
+                        adv_loss += gender_adv_loss * weight
                 total_adv_loss += adv_loss
                 
                 # Gender prediction accuracy
@@ -375,7 +396,7 @@ class DownstreamExpert(nn.Module):
             with open(Path(self.expdir) / "log.log", 'a') as f:
                 print(f"{mode} {key}: {val}")
                 f.write(f'{mode} {key} at step {global_step}: {val}\n')
-            if key == 'loss' and mode == 'dev' and val < self.best_score:
+            if key == 'emotion_loss' and mode == 'dev' and val < self.best_score:
                 self.best_score = torch.ones(1)*val
                 with open(Path(self.expdir) / "log.log", 'a') as f:
                     f.write(f'New best on {mode} {key} at step {global_step}: {val}\n')

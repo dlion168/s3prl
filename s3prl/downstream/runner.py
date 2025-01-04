@@ -92,6 +92,10 @@ class Runner():
 
         self.upstream = self._get_upstream()
         self.featurizer = self._get_featurizer()
+        if self.config.get('num_featurizer', None):
+            self.additional_featurizers = self._get_additional_featurizer()
+        else:
+            self.additional_featurizers = None
         self.downstream = self._get_downstream()
         self.all_entries = [self.upstream, self.featurizer, self.downstream]
 
@@ -175,6 +179,22 @@ class Runner():
         return self._init_model(
             model = model,
             name = 'Featurizer',
+            trainable = True,
+            interfaces = ['output_dim', 'downsample_rate']
+        )
+        
+    def _get_additional_featurizer(self):
+        model = Featurizer(
+            upstream = self.upstream.model,
+            feature_selection = self.args.upstream_feature_selection,
+            layer_selection = self.args.upstream_layer_selection,
+            upstream_device = self.args.device,
+            normalize = self.args.upstream_feature_normalize,
+        ).to(self.args.device)
+
+        return self._init_model(
+            model = model,
+            name = 'AdditionalFeaturizer',
             trainable = True,
             interfaces = ['output_dim', 'downsample_rate']
         )
