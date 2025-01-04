@@ -465,12 +465,12 @@ class DownstreamExpert(nn.Module):
             max_dp = max(DP_disparities) if DP_disparities else 0.0
 
             with open(Path(self.expdir) / "log.log", 'a') as f:
-                print(f"{mode} TPR RMS disparity: {rms_tpr}, max disparity: {max_tpr}")
-                f.write(f"{mode} TPR RMS disparity: {rms_tpr}, max disparity: {max_tpr}\n")
-                print(f"{mode} FPR RMS disparity: {rms_fpr}, max disparity: {max_fpr}")
-                f.write(f"{mode} FPR RMS disparity: {rms_fpr}, max disparity: {max_fpr}\n")
-                print(f"{mode} F1 RMS disparity: {rms_f1}, max disparity: {max_f1}")
-                f.write(f"{mode} F1 RMS disparity: {rms_f1}, max disparity: {max_f1}\n")
+                print(f"{mode} TPR RMS gap: {rms_tpr}, max gap: {max_tpr}")
+                f.write(f"{mode} TPR RMS gap: {rms_tpr}, max gap: {max_tpr}\n")
+                print(f"{mode} FPR RMS gap: {rms_fpr}, max gap: {max_fpr}")
+                f.write(f"{mode} FPR RMS gap: {rms_fpr}, max gap: {max_fpr}\n")
+                print(f"{mode} F1 RMS gap: {rms_f1}, max gap: {max_f1}")
+                f.write(f"{mode} F1 RMS gap: {rms_f1}, max gap: {max_f1}\n")
                 print(f"{mode} DP RMS disparity: {rms_dp}, max disparity: {max_dp}")
                 f.write(f"{mode} DP RMS disparity: {rms_dp}, max disparity: {max_dp}\n")
 
