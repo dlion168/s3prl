@@ -117,6 +117,7 @@ class DownstreamExpert(nn.Module):
         self.omega_LVR = downstream_expert['debias'].get('omega_LVR', 0.3)
         self.lambda_LVR = downstream_expert['debias'].get('lambda_LVR', 0.1)
         self.enable_center_cls = downstream_expert['debias'].get('enable_center_cls', True)
+        self.lvr_previous_centers = None
         # ------------------------------------------
 
         self.fold = self.datarc.get('test_fold') or kwargs.get("downstream_variant")
@@ -389,7 +390,7 @@ class DownstreamExpert(nn.Module):
                 if mask.sum() > 0:
                     group_loss = per_sample_loss[mask].mean()
                     loss_g_list.append((group_loss + self.lambda_GDRO / math.sqrt(self.gender_count[g.item()]), g.item()))
-            if len(loss_g_list) == 0:
+            if len(loss_g_list) == 0 and g.item() != -1:
                 total_loss = per_sample_loss.mean()
             else:
                 worst_L_g, worst_g = max(loss_g_list, key=lambda x: x[0])
@@ -500,44 +501,19 @@ class DownstreamExpert(nn.Module):
             labels_binary = torch.where(labels > self.k_thresold, 1.0, 0.0)
 
             # (2) 計算 batch center + 平滑
-            centers = []
-            center_exists = []
-            for c_idx in range(C):
-                mask_c = (labels_binary[:, c_idx] == 1.0)
-                if mask_c.sum() == 0:
-                    centers.append(None)
-                    center_exists.append(False)
-                    continue
-                z_in_class_c = projected_features[mask_c]  # shape=(n_c, D)
-                if z_in_class_c.size(0) == 1:
-                    avgZ_c = z_in_class_c[0]
-                else:
-                    avgZ_c = z_in_class_c.mean(dim=0)
-
-                # 取上一 batch 的 center 進行平滑
-                if c_idx in self.lvr_previous_centers:
-                    prev_center_c = self.lvr_previous_centers[c_idx].to(device)
-                    smoothed_center = (1.0 - self.omega_LVR)*avgZ_c + self.omega_LVR*prev_center_c
-                else:
-                    # 目前還沒有上一 batch center -> 直接用平均
-                    smoothed_center = avgZ_c
-
-                centers.append(smoothed_center)
-                center_exists.append(True)
+            avg_features = projected_features.mean(dim=1) #(B, H)
+            avgZ = labels.T @ avg_features
+            prev_center = self.lvr_previous_centers.to(device) if self.lvr_previous_centers != None else avgZ
+            centers = (1.0 - self.omega_LVR)*avgZ + self.omega_LVR*prev_center
 
             # (3) 計算 regularization loss L_r
-            L_r = torch.tensor(0.0, device=device)
-            for c_idx in range(C):
-                if not center_exists[c_idx]:
-                    continue
-                mask_c = (labels_binary[:, c_idx] == 1.0)
-                z_in_class_c = projected_features[mask_c]
-                if z_in_class_c.size(0) == 0:
-                    continue
-                center_c = centers[c_idx]  # (D,)
-                diff = z_in_class_c - center_c.unsqueeze(0)  # shape=(n_c, D)
-                dist_sq = (diff**2).sum(dim=1)               # shape=(n_c,)
-                L_r += dist_sq.mean()
+            # (3-1) 在 batch 維度 (B) 和 label/class 維度 (C) 進行廣播
+            #     diff 形狀會是 [B, C, H]
+            diff = avg_features.unsqueeze(1) - centers.unsqueeze(0)
+            # (3-2) 對 H 維度做平均 => dist_sq 形狀 [B, C]
+            dist_sq = diff.pow(2).mean(dim=2)
+            # (3-3) 乘上 labels (形狀 [B, C])，再進行整體加總
+            L_r = (dist_sq * labels).sum()
 
             # (4) (可選) center 的分類 L_c
             L_c = torch.tensor(0.0, device=device)
@@ -545,8 +521,6 @@ class DownstreamExpert(nn.Module):
                 center_features = []
                 center_labels = []
                 for c_idx in range(C):
-                    if not center_exists[c_idx]:
-                        continue
                     center_c = centers[c_idx]
                     center_features.append(center_c)
                     oh = torch.zeros(C, device=device)
@@ -554,7 +528,7 @@ class DownstreamExpert(nn.Module):
                     center_labels.append(oh)
 
                 if len(center_features) > 0:
-                    center_features = torch.stack(center_features, dim=0)  # (num_centers, D)
+                    center_features = torch.stack(center_features, dim=0).unsqueeze(1)  # (num_centers, 1, H)
                     center_len = torch.ones(center_features.size(0), dtype=torch.int32, device=device)
                     logits_center, _ = self.model(center_features, center_len)
                     center_labels = torch.stack(center_labels, dim=0)      # (num_centers, C)
@@ -570,11 +544,9 @@ class DownstreamExpert(nn.Module):
             predicted_logits = logits_debiased
 
             # (6) 更新 self.lvr_previous_centers
-            #     若該類別存在於本 batch，則存入 centers[c_idx]
-            for c_idx in range(C):
-                if center_exists[c_idx]:
-                    # 存 CPU 以免顯存累積
-                    self.lvr_previous_centers[c_idx] = centers[c_idx].detach().cpu()
+            # 若該類別存在於本 batch，則存入 centers[c_idx]
+            # 存 CPU 以免顯存累積
+            self.lvr_previous_centers = centers.detach().cpu()
 
             # 額外記錄以便觀察
             records["LVR_loss"] = records.get("LVR_loss", [])
@@ -634,10 +606,6 @@ class DownstreamExpert(nn.Module):
         acc = np.mean(acc_list) if len(acc_list) > 0 else 0.0
 
         average_loss = torch.FloatTensor(records['loss']).mean().item()
-        if "GR_loss" in records and len(records["GR_loss"])>0:
-            GR_loss = torch.FloatTensor(records['GR_loss']).mean()
-        else:
-            GR_loss = 0.0
 
         metrics_to_log = {
             'macro-f1': macro_f1,
@@ -645,7 +613,13 @@ class DownstreamExpert(nn.Module):
             'loss': average_loss
         }
         if self.training_mode == "GR":
+            GR_loss = torch.FloatTensor(records['GR_loss']).mean()
             metrics_to_log['GR_loss'] = GR_loss
+        if self.training_mode == "LVR":
+            LVR_loss = torch.FloatTensor(records['LVR_loss']).mean()
+            LVR_center_loss = torch.FloatTensor(records['LVR_center_loss']).mean()
+            metrics_to_log['LVR_loss'] = LVR_loss
+            metrics_to_log['LVR_center_loss'] = LVR_center_loss
 
         save_names = []
         for key, val in metrics_to_log.items():
