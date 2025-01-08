@@ -109,6 +109,8 @@ class DownstreamExpert(nn.Module):
         # LfF 相關超參數 (例如 q 值, EMA decay等)
         self.lff_q = downstream_expert['debias'].get('lff_q', 0.7)
         self.lff_ema_alpha = 0.7  # <- 固定 exponential decay 超參數
+        
+        self.sih_q = downstream_expert['debias'].get('sih_q', 0.7)
 
         self.lambda_GR = downstream_expert['debias'].get('lambda_GR', 1.0)
         self.lambda_GDRO = downstream_expert['debias'].get('lambda_GDRO', 0.0)
@@ -303,12 +305,14 @@ class DownstreamExpert(nn.Module):
         # Debiased Model forward
         projected_features = self.projector(padded_features)
         logits_debiased, _ = self.model(projected_features, features_len)
-
         # ------------------------- LfF 模式 --------------------------
         if self.training_mode == "LfF":
+            biased_features_len = torch.IntTensor([len(feat) for feat in kwargs['addi_features']]).to(device)
+            biased_padded_features = pad_sequence(kwargs['addi_features'], batch_first=True).to(device)
+            
             # 1) Biased Model forward
-            projected_b = self.projector_b(padded_features)
-            logits_b, _ = self.model_b(projected_b, features_len)
+            projected_b = self.projector_b(biased_padded_features)
+            logits_b, _ = self.model_b(projected_b, biased_features_len)
 
             # GCE loss (class-balanced)
             gce_loss_b = class_balanced_generalized_cross_entropy_loss(
@@ -357,6 +361,53 @@ class DownstreamExpert(nn.Module):
             records["LfF_debiased_loss"].append(loss_debiased)
             records["LfF_biased_loss"].append(loss_biased)
             
+            total_loss = loss_biased + loss_debiased
+            predicted_logits = logits_debiased
+            
+        # ------------------------- 新增: SiH 模式 --------------------------
+        elif self.training_mode == "SiH":
+            """
+            1) 偏置模型用 GCE 訓練 (與 LfF 類似)
+            2) 對無偏模型的 cross entropy，再乘上一個 focal-like reweight (1 - p_b)^q
+               其中 p_b 為偏置模型對正確類別（labels=1）所輸出的概率總和。
+               而 (1 - p_b) 會先 detach()，以免影響偏置模型參數的更新。
+            """
+            # 1) Biased model with GCE
+            biased_features_len = torch.IntTensor([len(feat) for feat in kwargs['addi_features']]).to(device)
+            biased_padded_features = pad_sequence(kwargs['addi_features'], batch_first=True).to(device)
+            
+            # Biased Model forward
+            projected_b = self.projector_b(biased_padded_features)
+            logits_b, _ = self.model_b(projected_b, biased_features_len)
+            gce_loss_b = class_balanced_generalized_cross_entropy_loss(
+                logits_b, 
+                labels, 
+                self.class_balanced_weights.to(device), 
+                q=self.lff_q, 
+                reduction='none'
+            )
+            loss_biased = gce_loss_b.mean()
+
+            # 2) Debiased model with focal-like weighting
+            ce_loss_d = class_balanced_softmax_cross_entropy_with_softtarget(
+                logits_debiased,
+                labels,
+                self.class_balanced_weights.to(device),
+                reduction='none'
+            )
+
+            with torch.no_grad():
+                prob_b = F.softmax(logits_b, dim=1)     # (B, C)
+                # 取出正確類別的機率 (multi-label 時可將所有正確類別的 prob 累加)
+                correct_prob_b = torch.sum(prob_b * labels, dim=1)  # (B,)
+                # focal-like weighting factor
+                weight_factor = (1.0 - correct_prob_b).detach().pow(self.sih_q)
+
+            loss_debiased = (weight_factor * ce_loss_d).mean()
+
+            records["SiH_debiased_loss"].append(loss_debiased.item())
+            records["SiH_biased_loss"].append(loss_biased.item())
+
             total_loss = loss_biased + loss_debiased
             predicted_logits = logits_debiased
 
@@ -620,6 +671,16 @@ class DownstreamExpert(nn.Module):
             LVR_center_loss = torch.FloatTensor(records['LVR_center_loss']).mean()
             metrics_to_log['LVR_loss'] = LVR_loss
             metrics_to_log['LVR_center_loss'] = LVR_center_loss
+        if self.training_mode == "LfF":
+            LfF_debiased_loss = torch.FloatTensor(records['LfF_debiased_loss']).mean()
+            LfF_biased_loss = torch.FloatTensor(records['LfF_biased_loss']).mean()
+            metrics_to_log['LfF_debiased_loss'] = LfF_debiased_loss
+            metrics_to_log['LfF_biased_loss'] = LfF_biased_loss
+        if self.training_mode == "SiH":
+            SiH_debiased_loss = torch.FloatTensor(records['SiH_debiased_loss']).mean()
+            SiH_biased_loss = torch.FloatTensor(records['SiH_biased_loss']).mean()
+            metrics_to_log['SiH_debiased_loss'] = SiH_debiased_loss
+            metrics_to_log['SiH_biased_loss'] = SiH_biased_loss
 
         save_names = []
         for key, val in metrics_to_log.items():

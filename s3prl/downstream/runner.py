@@ -98,6 +98,8 @@ class Runner():
             self.additional_featurizers = None
         self.downstream = self._get_downstream()
         self.all_entries = [self.upstream, self.featurizer, self.downstream]
+        if self.additional_featurizers:
+            self.all_entries += [self.additional_featurizers]
 
 
     def _load_weight(self, model, name):
@@ -314,20 +316,32 @@ class Runner():
 
                     with torch.cuda.amp.autocast(enabled=amp):
                         if self.upstream.trainable:
-                            features = self.upstream.model(wavs)
+                            h_features = self.upstream.model(wavs)
                         else:
                             with torch.no_grad():
-                                features = self.upstream.model(wavs)
-                        features = self.featurizer.model(wavs, features)
+                                h_features = self.upstream.model(wavs)
+                        features = self.featurizer.model(wavs, h_features)
+                        if self.additional_featurizers:
+                            addi_features = self.additional_featurizers.model(wavs, h_features)
 
                         if specaug:
                             features, _ = specaug(features)
+                            if self.additional_featurizers:
+                                addi_features, _ = specaug(addi_features)
 
-                        loss = self.downstream.model(
-                            train_split,
-                            features, *others,
-                            records = records,
-                        )
+                        if self.additional_featurizers:
+                            loss = self.downstream.model(
+                                train_split,
+                                features, *others,
+                                records = records,
+                                addi_features = addi_features
+                            )
+                        else: 
+                            loss = self.downstream.model(
+                                train_split,
+                                features, *others,
+                                records = records,
+                            )
                     batch_ids.append(batch_id)
 
                     gradient_accumulate_steps = self.config['runner'].get('gradient_accumulate_steps')
@@ -487,14 +501,25 @@ class Runner():
 
             wavs = [torch.FloatTensor(wav).to(self.args.device) for wav in wavs]
             with torch.no_grad():
-                features = self.upstream.model(wavs)
-                features = self.featurizer.model(wavs, features)
-                self.downstream.model(
-                    split,
-                    features, *others,
-                    records = records,
-                    batch_id = batch_id,
-                )
+                h_features = self.upstream.model(wavs)
+                features = self.featurizer.model(wavs, h_features)
+                
+                if self.additional_featurizers:
+                    addi_features = self.additional_featurizers.model(wavs, h_features)
+                    loss = self.downstream.model(
+                        split,
+                        features, *others,
+                        records = records,
+                        batch_id = batch_id,
+                        addi_features = addi_features
+                    )
+                else: 
+                    loss = self.downstream.model(
+                        split,
+                        features, *others,
+                        batch_id = batch_id,
+                        records = records,
+                    )
                 batch_ids.append(batch_id)
 
         save_names = self.downstream.model.log_records(
