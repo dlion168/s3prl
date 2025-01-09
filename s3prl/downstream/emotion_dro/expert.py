@@ -96,7 +96,10 @@ class DownstreamExpert(nn.Module):
     - "DS": Downsampling debiasing
     - "RW": Reweighting debiasing
     - "GR": Gap Regularization debiasing
-    - "LfF": Learning from Failure (newly added)
+    - "LfF": Learning from Failure
+    - "SiH": Signal is Harder than bias
+    - "DisEnt": Disentangling-based Debiasing
+    - "LVR": Latent Variance Regularization
     """
 
     def __init__(self, upstream_dim, downstream_expert, expdir, **kwargs):
@@ -111,6 +114,10 @@ class DownstreamExpert(nn.Module):
         self.lff_ema_alpha = 0.7  # <- 固定 exponential decay 超參數
         
         self.sih_q = downstream_expert['debias'].get('sih_q', 0.7)
+        
+        self.lambda_dis_focal = downstream_expert['debias'].get('lambda_dis_focal', 5.0)
+        self.lambda_swap = downstream_expert['debias'].get('lambda_swap', 1.0)
+        self.disent_t_swap = downstream_expert['debias'].get('disent_t_swap', 10000)
 
         self.lambda_GR = downstream_expert['debias'].get('lambda_GR', 1.0)
         self.lambda_GDRO = downstream_expert['debias'].get('lambda_GDRO', 0.0)
@@ -148,22 +155,22 @@ class DownstreamExpert(nn.Module):
         # ---------------------- Debiased Model ----------------------
         self.projector = nn.Linear(upstream_dim, self.modelrc['projector_dim'])
         self.model = model_cls(
-            input_dim=self.modelrc['projector_dim'],
-            output_dim=len(self.config['categorical']["emo_type"]),
+            input_dim = 2*self.modelrc['projector_dim'] if self.training_mode == "DisEnt" else self.modelrc['projector_dim'],
+            output_dim = len(self.config['categorical']["emo_type"]),
             **model_conf,
         )
 
         # --------------------- Biased Model (for LfF) ---------------------
         self.projector_b = nn.Linear(upstream_dim, self.modelrc['projector_dim'])
         self.model_b = model_cls(
-            input_dim=self.modelrc['projector_dim'],
+            input_dim = 2*self.modelrc['projector_dim'] if self.training_mode == "DisEnt" else self.modelrc['projector_dim'],
             output_dim=len(self.config['categorical']["emo_type"]),
             **model_conf,
         )
 
         # LfF 執行時，我們會在 forward() 中用到的 EMA buffer (更新於每個 batch)
-        self.ema_loss_b = None
-        self.ema_loss_d = None
+        self.ema_loss_b = []
+        self.ema_loss_d = []
 
         # 給其他模式 (ERM / RW / DS / GroupDRO / GR) 用的損失函式
         self.objective = class_balanced_softmax_cross_entropy_with_softtarget
@@ -301,19 +308,23 @@ class DownstreamExpert(nn.Module):
         padded_features = pad_sequence(features, batch_first=True).to(device)
         labels = labels.to(device)
         sample_weights = sample_weights.to(device)
+        batch_id = kwargs['batch_id']
+        projected_features = self.projector(padded_features)
 
         # Debiased Model forward
-        projected_features = self.projector(padded_features)
-        logits_debiased, _ = self.model(projected_features, features_len)
-        # ------------------------- LfF 模式 --------------------------
-        if self.training_mode == "LfF":
+        if self.training_mode != "DisEnt":
+            logits_debiased, _ = self.model(projected_features, features_len)
+        
+        if self.training_mode in ["LfF", "SiH", "DisEnt"]:
             biased_features_len = torch.IntTensor([len(feat) for feat in kwargs['addi_features']]).to(device)
             biased_padded_features = pad_sequence(kwargs['addi_features'], batch_first=True).to(device)
-            
-            # 1) Biased Model forward
             projected_b = self.projector_b(biased_padded_features)
-            logits_b, _ = self.model_b(projected_b, biased_features_len)
-
+            if self.training_mode != "DisEnt":
+                # 1) Biased Model forward
+                logits_b, _ = self.model_b(projected_b, biased_features_len)
+        
+        # ------------------------- LfF 模式 --------------------------
+        if self.training_mode == "LfF":
             # GCE loss (class-balanced)
             gce_loss_b = class_balanced_generalized_cross_entropy_loss(
                 logits_b, 
@@ -339,22 +350,30 @@ class DownstreamExpert(nn.Module):
             )  # (B,)
 
             # ====== EMA Trick for stable training ======
-            # 先更新並維護各個 sample 的 EMA
-            with torch.no_grad():
-                # 若尚未初始化，直接用本 batch 的 loss 當起始值
-                if self.ema_loss_b is None:
-                    self.ema_loss_b = ce_loss_b.mean(0).detach()
-                    self.ema_loss_d = ce_loss_d.mean(0).detach()
+            while len(self.ema_loss_b) <= batch_id:
+                self.ema_loss_b.append(None)
+                self.ema_loss_d.append(None)
+                
+            weights = torch.ones(ce_loss_d.shape[0]).to(device)
+            if mode == 'train':
+                # 若本 batch_i 尚未初始化，就直接設成本 batch 的 mean loss
+                if self.ema_loss_b[batch_id] is None:
+                    self.ema_loss_b[batch_id] = ce_loss_b.detach().clone()
+                    self.ema_loss_d[batch_id] = ce_loss_d.detach().clone()
                 else:
-                    # Exponential Moving Average (element-wise)
+                    # Exponential Moving Average
                     alpha = self.lff_ema_alpha
-                    self.ema_loss_b = alpha * self.ema_loss_b + (1 - alpha) * ce_loss_b.mean(0).detach()
-                    self.ema_loss_d = alpha * self.ema_loss_d + (1 - alpha) * ce_loss_d.mean(0).detach()
+                    old_b = self.ema_loss_b[batch_id]
+                    old_d = self.ema_loss_d[batch_id]
+                    self.ema_loss_b[batch_id] = alpha * old_b + (1 - alpha) * ce_loss_b.detach()  # (B, )
+                    self.ema_loss_d[batch_id] = alpha * old_d + (1 - alpha) * ce_loss_d.detach()  # (B, )
 
-            # 利用 EMA 後的 loss 來計算相對難度
-            denom = self.ema_loss_b + self.ema_loss_d + 1e-8  # shape=(B,)
-            weights = self.ema_loss_b / denom                # shape=(B,)
-
+                # 之後計算相對難度
+                denom = self.ema_loss_b[batch_id] + self.ema_loss_d[batch_id] + 1e-8
+                weights = self.ema_loss_b[batch_id] / denom
+                weights = weights.to(device)
+                # =====================================================
+            
             # Weighted Cross Entropy for Debiased Model
             loss_debiased = (weights * ce_loss_d).mean()
 
@@ -372,13 +391,6 @@ class DownstreamExpert(nn.Module):
                其中 p_b 為偏置模型對正確類別（labels=1）所輸出的概率總和。
                而 (1 - p_b) 會先 detach()，以免影響偏置模型參數的更新。
             """
-            # 1) Biased model with GCE
-            biased_features_len = torch.IntTensor([len(feat) for feat in kwargs['addi_features']]).to(device)
-            biased_padded_features = pad_sequence(kwargs['addi_features'], batch_first=True).to(device)
-            
-            # Biased Model forward
-            projected_b = self.projector_b(biased_padded_features)
-            logits_b, _ = self.model_b(projected_b, biased_features_len)
             gce_loss_b = class_balanced_generalized_cross_entropy_loss(
                 logits_b, 
                 labels, 
@@ -410,6 +422,130 @@ class DownstreamExpert(nn.Module):
 
             total_loss = loss_biased + loss_debiased
             predicted_logits = logits_debiased
+        
+        elif self.training_mode == "DisEnt":
+            # 使 Ci 主要基於 zi，故 zb 在 concat 時做 detach，不回傳梯度給 Eb
+            # 同理，Cb 主要基於 zb，故 zi 在 concat 時做 detach。
+            zi_for_Ci = torch.cat([projected_features, projected_b.detach()], dim=-1)  # (B, T, 2D)
+            zb_for_Cb = torch.cat([projected_features.detach(), projected_b], dim=-1)  # (B, T, 2D)
+
+            # 接著分別餵給 model_i, model_b (對應 Ci, Cb) 做分類輸出
+            logits_debiased, _ = self.model(zi_for_Ci, features_len)
+            logits_b, _ = self.model_b(zb_for_Cb, features_len)
+            # === 2) 計算 relative difficulty score W(z) (Eq. (1)) ===
+            # CE(Ci(z), y) & CE(Cb(z), y)
+            ce_ci = class_balanced_softmax_cross_entropy_with_softtarget(
+                logits_debiased,  # Ci(z)
+                labels,
+                self.class_balanced_weights.to(device),
+                reduction='none'
+            )  # shape=(B,)
+
+            ce_cb = class_balanced_softmax_cross_entropy_with_softtarget(
+                logits_b,         # Cb(z)
+                labels,
+                self.class_balanced_weights.to(device),
+                reduction='none'
+            )  # shape=(B,)
+            
+                        # ====== EMA Trick for stable training ======
+            while len(self.ema_loss_b) <= batch_id:
+                self.ema_loss_b.append(None)
+                self.ema_loss_d.append(None)
+
+            weights = torch.ones(ce_cb.shape[0]).to(device)
+            
+            if mode == 'train':
+                # 若本 batch_i 尚未初始化，就直接設成本 batch 的 mean loss
+                if self.ema_loss_b[batch_id] is None:
+                    self.ema_loss_b[batch_id] = ce_cb.detach().clone()
+                    self.ema_loss_d[batch_id] = ce_ci.detach().clone()
+                else:
+                    # Exponential Moving Average
+                    alpha = self.lff_ema_alpha
+                    old_b = self.ema_loss_b[batch_id]
+                    old_d = self.ema_loss_d[batch_id]
+                    self.ema_loss_b[batch_id] = alpha * old_b + (1 - alpha) * ce_cb.detach() # shape=(B,)
+                    self.ema_loss_d[batch_id] = alpha * old_d + (1 - alpha) * ce_ci.detach() # shape=(B,)
+
+                # 之後計算相對難度
+                denom = self.ema_loss_b[batch_id] + self.ema_loss_d[batch_id] + 1e-8         # shape=(B,)
+                weights = self.ema_loss_b[batch_id] / denom                                  # shape=(B,)
+                weights = weights.to(device)
+
+            # === 3) L_dis = W(z)*CE(Ci(z),y) + lambda_dis * GCE(Cb(z),y) ===
+            ce_ci_weighted = weights * ce_ci  # shape=(B,)
+            gce_cb = class_balanced_generalized_cross_entropy_loss(
+                logits_b,
+                labels,
+                self.class_balanced_weights.to(device),
+                q=0.7,  # 也可從 config 取
+                reduction='none'
+            )  # shape=(B,)
+
+            L_dis = ce_ci_weighted.mean() + self.lambda_dis_focal * gce_cb.mean()
+            
+            # === 4) 若 iteration > t_swap，才執行 swap => zswap = [zi; z̃b] 並計算 L_swap ===
+            #     先確定 batch size >= 2，才能亂序 permute；若 batch=1 就不做 swap 了
+            L_swap = torch.tensor(0.0, device=device)       
+            ce_ci_swap_weighted = torch.tensor(0.0, device=device) 
+            gce_cb_swap = torch.tensor(0.0, device=device)
+            if (kwargs['global_step'] > self.disent_t_swap) and (len(features) > 1):
+                B = projected_features.size(0)
+                # 隨機打亂 zb，perm_idx 不含自己 => (簡化起見，這裡直接用 random.shuffle)
+                perm_idx = torch.randperm(B, device=device)
+                # 取得 z̃b
+                zb_perm = projected_b[perm_idx, :]  # (B, T, D)
+                
+                # zswap 只需要丟給 Ci, Cb 分別做 forward:
+                #   Ci(zswap) => Ci([zi, z̃b])  => 這裡簡化為 concat 再 forward
+                #   Cb(zswap) => Cb([zi, z̃b])，
+                # 這裡展示最簡方式：直接 cat 在 feature dim。
+                zswap_for_Ci = torch.cat([projected_features, zb_perm.detach()], dim=-1)  # shape=(B, T, D*2)
+                zswap_for_Cb = torch.cat([projected_features.detach(), zb_perm], dim=-1)  # shape=(B, T, D*2)
+
+                # forward Ci(zswap)
+                logits_ci_swap, _ = self.model(zswap_for_Ci, features_len)
+                # forward Cb(zswap)
+                logits_cb_swap, _ = self.model_b(zswap_for_Cb, features_len)
+
+                # W(z) (同一個 W_z) 也可或不可重算，論文中是對每個樣本 z 都有 W(z)，
+                # 但這裡示意就用同一個 W_z. 
+
+                # ỹ: 若有「針對 permute 後 bias 属性」的 label，可從 kwargs['perm_labels'] 取
+                # 沒有的話，先假設一樣都是 labels
+                perm_labels = labels[perm_idx, :]
+
+                ce_ci_swap = class_balanced_softmax_cross_entropy_with_softtarget(
+                    logits_ci_swap,
+                    labels,
+                    self.class_balanced_weights.to(device),
+                    reduction='none'
+                )  # shape=(B,)
+
+                gce_cb_swap = class_balanced_generalized_cross_entropy_loss(
+                    logits_cb_swap,
+                    perm_labels,  # 論文中對 Cb 用 ỹ
+                    self.class_balanced_weights.to(device),
+                    q=0.7,
+                    reduction='none'
+                )  # shape=(B,)
+
+                # L_swap = W(z)*CE(Ci(zswap), y) + lambda_swap_b * GCE(Cb(zswap), ỹ)
+                # 這裡假設 lambda_swap_b = self.lambda_swap (也可做細分)
+                ce_ci_swap_weighted = weights * ce_ci_swap
+                L_swap = ce_ci_swap_weighted.mean() + self.lambda_dis_focal * gce_cb_swap.mean()
+
+            total_loss = L_dis + self.lambda_swap * L_swap  # Eq. (4)
+            predicted_logits = logits_debiased  # 最終輸出用 Ci(z) (intrinsic) 的結果
+
+            # 為了觀察訓練情況，也可記錄:
+            records["DisEnt_Ldis_unbiased"].append(ce_ci_weighted.mean().item())
+            records["DisEnt_Ldis_biased"].append(gce_cb.mean().item())
+            records["DisEnt_Ldis"].append(L_dis.item())
+            records["DisEnt_Lswap_unbiased"].append(ce_ci_swap_weighted.mean().item())
+            records["DisEnt_Lswap_biased"].append(gce_cb_swap.mean().item())
+            records["DisEnt_Lswap"].append(L_swap.item())
 
         # --------------------- 其他模式: ERM / DS / RW ---------------------
         elif self.training_mode in ["ERM", "DS", "RW"]:
@@ -548,8 +684,6 @@ class DownstreamExpert(nn.Module):
             classification_loss = per_sample_loss.mean()
 
             B, C = labels.shape
-            # Multi-label -> 二元: label[i,c]=1表示樣本i屬於類別c
-            labels_binary = torch.where(labels > self.k_thresold, 1.0, 0.0)
 
             # (2) 計算 batch center + 平滑
             avg_features = projected_features.mean(dim=1) #(B, H)
@@ -666,21 +800,34 @@ class DownstreamExpert(nn.Module):
         if self.training_mode == "GR":
             GR_loss = torch.FloatTensor(records['GR_loss']).mean()
             metrics_to_log['GR_loss'] = GR_loss
-        if self.training_mode == "LVR":
+        elif self.training_mode == "LVR":
             LVR_loss = torch.FloatTensor(records['LVR_loss']).mean()
             LVR_center_loss = torch.FloatTensor(records['LVR_center_loss']).mean()
             metrics_to_log['LVR_loss'] = LVR_loss
             metrics_to_log['LVR_center_loss'] = LVR_center_loss
-        if self.training_mode == "LfF":
+        elif self.training_mode == "LfF":
             LfF_debiased_loss = torch.FloatTensor(records['LfF_debiased_loss']).mean()
             LfF_biased_loss = torch.FloatTensor(records['LfF_biased_loss']).mean()
             metrics_to_log['LfF_debiased_loss'] = LfF_debiased_loss
             metrics_to_log['LfF_biased_loss'] = LfF_biased_loss
-        if self.training_mode == "SiH":
+        elif self.training_mode == "SiH":
             SiH_debiased_loss = torch.FloatTensor(records['SiH_debiased_loss']).mean()
             SiH_biased_loss = torch.FloatTensor(records['SiH_biased_loss']).mean()
             metrics_to_log['SiH_debiased_loss'] = SiH_debiased_loss
             metrics_to_log['SiH_biased_loss'] = SiH_biased_loss
+        elif self.training_mode == "DisEnt":
+            DisEnt_Ldis_unbiased = torch.FloatTensor(records["DisEnt_Ldis_unbiased"]).mean()
+            DisEnt_Ldis_biased = torch.FloatTensor(records["DisEnt_Ldis_biased"]).mean()
+            DisEnt_Lswap_unbiased = torch.FloatTensor(records["DisEnt_Lswap_unbiased"]).mean()
+            DisEnt_Lswap_biased = torch.FloatTensor(records["DisEnt_Lswap_biased"]).mean()
+            DisEnt_Ldis = torch.FloatTensor(records['DisEnt_Ldis']).mean()
+            DisEnt_Lswap = torch.FloatTensor(records['DisEnt_Lswap']).mean()
+            metrics_to_log['DisEnt_Ldis'] = DisEnt_Ldis
+            metrics_to_log['DisEnt_Lswap'] = DisEnt_Lswap
+            metrics_to_log["DisEnt_Ldis_unbiased"] = DisEnt_Ldis_unbiased
+            metrics_to_log["DisEnt_Ldis_biased"] = DisEnt_Ldis_biased
+            metrics_to_log["DisEnt_Lswap_unbiased"] = DisEnt_Lswap_unbiased
+            metrics_to_log["DisEnt_Lswap_biased"] = DisEnt_Lswap_biased
 
         save_names = []
         for key, val in metrics_to_log.items():
