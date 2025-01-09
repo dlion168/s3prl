@@ -334,7 +334,9 @@ class Runner():
                                 train_split,
                                 features, *others,
                                 records = records,
-                                addi_features = addi_features
+                                addi_features = addi_features,
+                                global_step = global_step,
+                                batch_id = batch_id
                             )
                         else: 
                             loss = self.downstream.model(
@@ -511,7 +513,8 @@ class Runner():
                         features, *others,
                         records = records,
                         batch_id = batch_id,
-                        addi_features = addi_features
+                        addi_features = addi_features,
+                        global_step = global_step
                     )
                 else: 
                     loss = self.downstream.model(
