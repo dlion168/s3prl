@@ -6,7 +6,7 @@ import csv
 from collections import defaultdict
 from pathlib import Path
 
-def read_log_and_average(exp_id, lr, base_path="downstream", metric="loss"):
+def read_log_and_average(exp_id, lr, base_path="downstream", metric="loss", start_from_step=0):
     # Pattern to match folders like "{exp_id}_fold{i}_{lr}"
     pattern = re.compile(rf"^{exp_id}_fold(\d+)_{lr}$")
 
@@ -20,9 +20,9 @@ def read_log_and_average(exp_id, lr, base_path="downstream", metric="loss"):
     # Metrics that appear as RMS and max on the same line (without "at step"):
     # We'll parse them after the best step line, first occurrence only.
     rms_max_pairs = [
-        ("test TPR RMS disparity", "test TPR max disparity", "max disparity"),
-        ("test FPR RMS disparity", "test FPR max disparity", "max disparity"),
-        ("test F1 RMS disparity", "test F1 max disparity", "max disparity"),
+        ("test TPR RMS gap", "test TPR max gap", "max gap"),
+        ("test FPR RMS gap", "test FPR max gap", "max gap"),
+        ("test F1 RMS gap", "test F1 max gap", "max gap"),
         ("test DP RMS disparity", "test DP max disparity", "max disparity")
     ]
 
@@ -31,12 +31,12 @@ def read_log_and_average(exp_id, lr, base_path="downstream", metric="loss"):
         "test macro-f1",
         "test acc",
         "test loss",
-        "test TPR RMS disparity",
-        "test TPR max disparity",
-        "test FPR RMS disparity",
-        "test FPR max disparity",
-        "test F1 RMS disparity",
-        "test F1 max disparity",
+        "test TPR RMS gap",
+        "test TPR max gap",
+        "test FPR RMS gap",
+        "test FPR max gap",
+        "test F1 RMS gap",
+        "test F1 max gap",
         "test DP RMS disparity",
         "test DP max disparity"
     ]
@@ -74,10 +74,11 @@ def read_log_and_average(exp_id, lr, base_path="downstream", metric="loss"):
             gr_loss_match = re.search(fr"dev {metric} at step (\d+): ([\d.]+)", line)
             if gr_loss_match:
                 step_num = int(gr_loss_match.group(1))
-                gr_loss_val = float(gr_loss_match.group(2))
-                if gr_loss_val < best_gr_loss:
-                    best_gr_loss = gr_loss_val
-                    best_step = step_num
+                if step_num >= start_from_step: 
+                    gr_loss_val = float(gr_loss_match.group(2))
+                    if gr_loss_val < best_gr_loss:
+                        best_gr_loss = gr_loss_val
+                        best_step = step_num
 
         if best_step is None:
             print(f"No dev {metric} found in {log_path}, skip this fold.")
@@ -160,20 +161,21 @@ if __name__ == "__main__":
     parser.add_argument("-l", "--lr", type=str, required=True, help="Learning rate")
     parser.add_argument("-b", "--base_path", type=str, default="./result/downstream", help="Base path to the experiment folders")
     parser.add_argument("-o", "--output_csv", type=str, help="Path to save the output CSV file")
-    parser.add_argument("-m", "--metric", type=str, help="Lowest metric to parse from")
+    parser.add_argument("-m", "--metric", type=str, help="Lowest metric to parse from", default="loss")
+    parser.add_argument("-s", "--start_from_step", type=int, help="Parsing metrics after this step", default=0)
     args = parser.parse_args()
 
-    results = read_log_and_average(args.exp_id, args.lr, args.base_path, args.metric)
+    results = read_log_and_average(args.exp_id, args.lr, args.base_path, args.metric, args.start_from_step)
 
     columns = [
         "test macro-f1",
         "test acc",
-        "test TPR RMS disparity",
-        "test TPR max disparity",
-        "test FPR RMS disparity",
-        "test FPR max disparity",
-        "test F1 RMS disparity",
-        "test F1 max disparity",
+        "test TPR RMS gap",
+        "test TPR max gap",
+        "test FPR RMS gap",
+        "test FPR max gap",
+        "test F1 RMS gap",
+        "test F1 max gap",
         "test DP RMS disparity",
         "test DP max disparity"
     ]
