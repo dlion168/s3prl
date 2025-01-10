@@ -308,7 +308,6 @@ class DownstreamExpert(nn.Module):
         padded_features = pad_sequence(features, batch_first=True).to(device)
         labels = labels.to(device)
         sample_weights = sample_weights.to(device)
-        batch_id = kwargs['batch_id']
         projected_features = self.projector(padded_features)
 
         # Debiased Model forward
@@ -316,6 +315,7 @@ class DownstreamExpert(nn.Module):
             logits_debiased, _ = self.model(projected_features, features_len)
         
         if self.training_mode in ["LfF", "SiH", "DisEnt"]:
+            batch_id = kwargs['batch_id']
             biased_features_len = torch.IntTensor([len(feat) for feat in kwargs['addi_features']]).to(device)
             biased_padded_features = pad_sequence(kwargs['addi_features'], batch_first=True).to(device)
             projected_b = self.projector_b(biased_padded_features)
@@ -574,7 +574,7 @@ class DownstreamExpert(nn.Module):
             loss_g_list = []
             for g in unique_genders:
                 mask = (gender_labels == g)
-                if mask.sum() > 0:
+                if mask.sum() > 0 and g.item() != -1:
                     group_loss = per_sample_loss[mask].mean()
                     loss_g_list.append((group_loss + self.lambda_GDRO / math.sqrt(self.gender_count[g.item()]), g.item()))
             if len(loss_g_list) == 0 and g.item() != -1:
