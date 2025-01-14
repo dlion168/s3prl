@@ -128,6 +128,7 @@ class DownstreamExpert(nn.Module):
         self.enable_center_cls = downstream_expert['debias'].get('enable_center_cls', True)
         self.lvr_previous_centers = None
         # ------------------------------------------
+        self.sihlvr_t_start = downstream_expert['debias'].get('sihlvr_t_start', 0)
 
         self.fold = self.datarc.get('test_fold') or kwargs.get("downstream_variant")
         print(f"[Expert] - Using testing fold: \"{self.fold}\".")
@@ -440,78 +441,85 @@ class DownstreamExpert(nn.Module):
             )
             loss_biased = gce_loss_b.mean()
 
-            # 2) focal-like weighting on debiased model
-            ce_loss_d = class_balanced_softmax_cross_entropy_with_softtarget(
-                logits_debiased,
-                labels,
-                self.class_balanced_weights.to(device),
-                reduction='none'
-            )
-            with torch.no_grad():
-                prob_b = F.softmax(logits_b, dim=1)
-                correct_prob_b = torch.sum(prob_b * labels, dim=1)
-                weight_factor = (1.0 - correct_prob_b).detach().pow(self.sih_q)
+            if kwargs['global_step'] < self.sihlvr_t_start:
+                # >>> NEW for SiHLVR condition <<<
+                # 只訓練 biased model
+                total_loss = loss_biased
+                # 不做 focal reweight nor LVR
+                records["SiHLVR_biased_loss"].append(loss_biased.item())
+                records["SiHLVR_debiased_loss"].append(10.0)
+                records["SiHLVR_lvr_loss"].append(0.0)
+                if self.enable_center_cls:
+                    records["SiHLVR_center_loss"].append(0.0)
 
-            classification_loss = (weight_factor * ce_loss_d).mean()
+                # 預設用偏置模型 logits_b 當作「最終輸出」(若您想仍用 debiased 的 logits 也可)
+                predicted_logits = logits_b
 
-            # ---------- LVR part (對 debiased model) ----------
-            B, C = labels.shape
-            avg_features = projected_features.mean(dim=1)  # (B, H)
-            if self.lvr_previous_centers is None:
-                # 第一次執行
-                centers = labels.T @ avg_features
-                self.lvr_previous_centers = centers.detach().cpu()
             else:
-                prev_center = self.lvr_previous_centers.to(device)
-                centers = labels.T @ avg_features
-                # linear interpolation
-                centers = (1.0 - self.omega_LVR) * centers + self.omega_LVR * prev_center
-
-            diff = avg_features.unsqueeze(1) - centers.unsqueeze(0)  # shape [B, C, H]
-            dist_sq = diff.pow(2).mean(dim=2)                         # shape [B, C]
-            L_r = (dist_sq * labels).sum()
-
-            # optional L_c
-            L_c = torch.tensor(0.0, device=device)
-            if self.enable_center_cls:
-                center_features = []
-                center_labels = []
-                for c_idx in range(C):
-                    center_c = centers[c_idx]
-                    center_features.append(center_c)
-                    oh = torch.zeros(C, device=device)
-                    oh[c_idx] = 1.0
-                    center_labels.append(oh)
-
-                center_features = torch.stack(center_features, dim=0).unsqueeze(1)  # [C, 1, H]
-                center_len = torch.ones(center_features.size(0), dtype=torch.int32, device=device)
-                logits_center, _ = self.model(center_features, center_len)
-                center_labels = torch.stack(center_labels, dim=0)
-                L_c = self.objective(
-                    logits_center,
-                    center_labels,
+                # focal-like weighting on debiased model
+                ce_loss_d = class_balanced_softmax_cross_entropy_with_softtarget(
+                    logits_debiased,
+                    labels,
                     self.class_balanced_weights.to(device),
-                    reduction='mean'
+                    reduction='none'
                 )
+                with torch.no_grad():
+                    prob_b = F.softmax(logits_b, dim=1)
+                    correct_prob_b = torch.sum(prob_b * labels, dim=1)
+                    weight_factor = (1.0 - correct_prob_b).detach().pow(self.sih_q)
 
-            # update centers
-            self.lvr_previous_centers = centers.detach().cpu()
+                classification_loss = (weight_factor * ce_loss_d).mean()
 
-            # ---------- combine everything ----------
-            # total_loss = biased + classification_loss(帶focal) + lambda_LVR*(L_r + L_c)
-            # 這裡把 L_r + L_c 做顯式 => L_r + L_c
-            # 或可 separate => total_loss = loss_biased + classification_loss + self.lambda_LVR * (L_r + L_c)
-            L_lvr = L_r + L_c
-            lvr_part = self.lambda_LVR * L_lvr
-            total_loss = loss_biased + classification_loss + lvr_part
+                # ---------- LVR part (對 debiased model) ----------
+                B, C = labels.shape
+                avg_features = projected_features.mean(dim=1)
+                if self.lvr_previous_centers is None:
+                    centers = labels.T @ avg_features
+                    self.lvr_previous_centers = centers.detach().cpu()
+                else:
+                    prev_center = self.lvr_previous_centers.to(device)
+                    centers = labels.T @ avg_features
+                    centers = (1.0 - self.omega_LVR) * centers + self.omega_LVR * prev_center
 
-            records["SiHLVR_biased_loss"].append(loss_biased.item())
-            records["SiHLVR_debiased_loss"].append(classification_loss.item())
-            records["SiHLVR_lvr_loss"].append(L_r.item())
-            if self.enable_center_cls:
-                records["SiHLVR_center_loss"].append(L_c.item())
+                diff = avg_features.unsqueeze(1) - centers.unsqueeze(0)
+                dist_sq = diff.pow(2).mean(dim=2)
+                L_r = (dist_sq * labels).sum()
 
-            predicted_logits = logits_debiased
+                L_c = torch.tensor(0.0, device=device)
+                if self.enable_center_cls:
+                    center_features = []
+                    center_labels = []
+                    for c_idx in range(C):
+                        center_c = centers[c_idx]
+                        center_features.append(center_c)
+                        oh = torch.zeros(C, device=device)
+                        oh[c_idx] = 1.0
+                        center_labels.append(oh)
+
+                    center_features = torch.stack(center_features, dim=0).unsqueeze(1)
+                    center_len = torch.ones(center_features.size(0), dtype=torch.int32, device=device)
+                    logits_center, _ = self.model(center_features, center_len)
+                    center_labels = torch.stack(center_labels, dim=0)
+                    L_c = self.objective(
+                        logits_center,
+                        center_labels,
+                        self.class_balanced_weights.to(device),
+                        reduction='mean'
+                    )
+
+                self.lvr_previous_centers = centers.detach().cpu()
+
+                L_lvr = L_r + L_c
+                lvr_part = self.lambda_LVR * L_lvr
+                total_loss = loss_biased + classification_loss + lvr_part
+
+                records["SiHLVR_biased_loss"].append(loss_biased.item())
+                records["SiHLVR_debiased_loss"].append(classification_loss.item())
+                records["SiHLVR_lvr_loss"].append(L_r.item())
+                if self.enable_center_cls:
+                    records["SiHLVR_center_loss"].append(L_c.item())
+
+                predicted_logits = logits_debiased
         
         elif self.training_mode == "DisEnt":
             # 使 Ci 主要基於 zi，故 zb 在 concat 時做 detach，不回傳梯度給 Eb
