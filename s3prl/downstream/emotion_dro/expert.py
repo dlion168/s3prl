@@ -315,7 +315,7 @@ class DownstreamExpert(nn.Module):
         if self.training_mode != "DisEnt":
             logits_debiased, _ = self.model(projected_features, features_len)
         
-        if self.training_mode in ["LfF", "SiH", "DisEnt"]:
+        if self.training_mode in ["LfF", "SiH", "DisEnt", "SiHLVR"]:
             batch_id = kwargs['batch_id']
             biased_features_len = torch.IntTensor([len(feat) for feat in kwargs['addi_features']]).to(device)
             biased_padded_features = pad_sequence(kwargs['addi_features'], batch_first=True).to(device)
