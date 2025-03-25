@@ -71,3 +71,4 @@ downstream_expert:
     lambda_dis_focal: 5
     lambda_swap: 1
     disent_t_swap: 10000
+    gamma_blind: 2

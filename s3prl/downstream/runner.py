@@ -185,7 +185,7 @@ class Runner():
             interfaces = ['output_dim', 'downsample_rate']
         )
         
-    def _get_additional_featurizer(self):
+    def _get_additional_featurizer(self): # train bias 
         model = Featurizer(
             upstream = self.upstream.model,
             feature_selection = self.args.upstream_feature_selection,

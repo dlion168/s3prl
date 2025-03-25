@@ -129,6 +129,12 @@ class DownstreamExpert(nn.Module):
         self.lvr_previous_centers = None
         # ------------------------------------------
         self.sihlvr_t_start = downstream_expert['debias'].get('sihlvr_t_start', 0)
+        
+        # ---------- BLIND 相關超參數 -----------
+        # gamma_blind: focal re-weighting exponent
+        self.gamma_blind = downstream_expert['debias'].get('gamma_blind', 2.0)
+        # 是否同時計算輔助分類器 (demographic or success) 的訓練損失
+        self.lambda_aux = downstream_expert['debias'].get('lambda_aux', 1)
 
         self.fold = self.datarc.get('test_fold') or kwargs.get("downstream_variant")
         print(f"[Expert] - Using testing fold: \"{self.fold}\".")
@@ -175,6 +181,14 @@ class DownstreamExpert(nn.Module):
 
         # 給其他模式 (ERM / RW / DS / GroupDRO / GR) 用的損失函式
         self.objective = class_balanced_softmax_cross_entropy_with_softtarget
+        
+        self.blind_aux = None  # 預設 None
+        if self.training_mode == "BLIND+d" or self.training_mode == "BLIND-d":
+            # BLIND with demographic => 預設做 "binary classification" for gender
+            # 也可視情況做多類別 => 這裡假設 gender_labels=0 or 1
+            self.blind_aux = nn.Sequential(
+                nn.Linear(self.modelrc['projector_dim'], 1),
+            )
 
         self.expdir = expdir
         self.register_buffer('best_score', torch.ones(1)*99999)
@@ -644,6 +658,133 @@ class DownstreamExpert(nn.Module):
             records["DisEnt_Lswap_unbiased"].append(ce_ci_swap_weighted.mean().item())
             records["DisEnt_Lswap_biased"].append(gce_cb_swap.mean().item())
             records["DisEnt_Lswap"].append(L_swap.item())
+        
+        # --------------------- BLIND + demographic (BLIND+d) ---------------------
+        elif self.training_mode == "BLIND+d":
+            """
+            1) 使用一個輔助分類器來預測 demographic (gender_label)，
+               gender_labels: 0 或 1 (假設二元).
+            2) 根據該分類器的預測信心水平 down-weight "易於推斷 demographic" 的樣本.
+            3) 使用 Debiased Focal Loss (DFL) 形式:
+                 L = (1 - confidence_of_demo)^gamma * CE(main_model)
+               並且對輔助分類器本身也做一個 cross entropy，最後合併:
+                 total_loss = main_loss + lambda_aux * aux_loss
+            """
+            # --- 先做主模型 logits ---
+            per_sample_ce = self.objective(
+                logits_debiased,
+                labels,
+                self.class_balanced_weights.to(device),
+                reduction='none'
+            )  # shape=(B,)
+
+            # --- 建構並 forward 輔助分類器 (demo) ---
+            # 這裡只示意用 [B, D] = mean over time steps
+            # 或自行改成 pooled feature
+            if self.blind_aux is None:
+                raise RuntimeError("BLIND+d mode needs self.blind_aux defined.")
+            rep_for_demo = projected_features.mean(dim=1)  # shape=(B, D)
+            logits_demo = self.blind_aux(rep_for_demo).squeeze(-1)  # shape=(B,)
+
+            # demo_label: 0/1 => shape=(B,)
+            # 在整份程式中 gender_labels 已傳入. 若 -1 代表未知, 這裡假設 batch 中都有有效 gender
+            # 只示意 => 要排除 -1 的樣本可能得特別處理
+            demo_label = gender_labels.to(device).float()
+
+            # (a) aux_loss：預測性別 => binary cross-entropy
+            aux_prob = torch.sigmoid(logits_demo)
+            # Identify valid demographic samples (demo_label != -1)
+            valid_mask = (demo_label != -1.0)
+
+            # If we have valid samples, apply the BLIND weighting only to them
+            if valid_mask.sum() > 0:
+                # Confidence for valid portion
+                confidence_demo_valid = torch.where(
+                    demo_label[valid_mask] > 0.5,
+                    aux_prob[valid_mask],
+                    1.0 - aux_prob[valid_mask]
+                )
+                weighting_factor_valid = (1.0 - confidence_demo_valid).detach().pow(self.gamma_blind)
+                
+                # Weighted main loss on valid samples
+                main_loss_valid = weighting_factor_valid * per_sample_ce[valid_mask]
+
+                # For invalid samples (demo_label == -1), do normal CE
+                main_loss_invalid = per_sample_ce[~valid_mask]
+
+                # Combine them across the entire batch
+                B = per_sample_ce.shape[0]
+                main_loss = (main_loss_valid.sum() + main_loss_invalid.sum()) / float(B)
+
+                # Auxiliary loss only on valid samples
+                aux_loss_valid = F.binary_cross_entropy(
+                    aux_prob[valid_mask],
+                    demo_label[valid_mask],
+                    reduction='none'
+                ).mean()
+
+                total_loss = main_loss + self.lambda_aux * aux_loss_valid
+
+                records["BLINDd_aux_loss"].append(aux_loss_valid.item())
+                records["BLINDd_main_loss"].append(main_loss.item())
+
+            else:
+                # If no valid sample in this batch, fallback to normal CE
+                main_loss = per_sample_ce.mean()
+                total_loss = main_loss
+
+            predicted_logits = logits_debiased
+        
+        # --------------------- BLIND - demographic (BLIND-d) ---------------------
+        elif self.training_mode == "BLIND-d":
+            """
+            1) 輔助分類器不再預測 demographic，而是預測「該樣本是否會被主模型正確分類」(success=1 / fail=0).
+            2) 同樣以 (1 - success_prob)^gamma 來對主模型的 CE 進行 down-weight.
+            3) total_loss = main_loss + lambda_aux * success_loss
+            """
+            if self.blind_aux is None:
+                raise RuntimeError("BLIND-d mode needs self.blind_aux defined.")
+            
+            # (A) 先算主模型的 CE
+            per_sample_ce = self.objective(
+                logits_debiased,
+                labels,
+                self.class_balanced_weights.to(device),
+                reduction='none'
+            )  # shape=(B,)
+
+            # (B) 計算每個樣本的 per-sample accuracy
+            #   - pred_bin, lbl_bin 都是 (B, C)
+            pred_dist = F.softmax(logits_debiased, dim=1)
+            pred_bin = torch.where(pred_dist > self.k_thresold, 1.0, 0.0)
+            lbl_bin = torch.where(labels > self.k_thresold, 1.0, 0.0)
+
+            B, C = pred_bin.size()
+            matching = (pred_bin == lbl_bin).sum(dim=1)    # shape=(B,)
+            acc_i = matching.float() / float(C)            # shape=(B,)
+
+            # (C) success detector forward => 預測每筆樣本的 accuracy
+            rep_for_success = projected_features.mean(dim=1)  # shape=(B, D)
+            logits_success = self.blind_aux(rep_for_success).squeeze(-1)  # shape=(B,)
+            success_prob = torch.sigmoid(logits_success)  # ∈ (0,1)
+
+            # (C1) success_loss => 用 MSE 擬合 f1_i
+            success_loss = F.binary_cross_entropy(
+                success_prob, acc_i.to(device), reduction='mean'
+            )
+            
+            # (D) 依 success_prob 產生 re-weight: w_i = (1 - success_prob_i)^gamma
+            weighting_factor = (1.0 - success_prob).detach().pow(self.gamma_blind)
+
+            main_loss = (weighting_factor * per_sample_ce).mean()
+            total_loss = main_loss + self.lambda_aux * success_loss
+
+            # 紀錄
+            records["BLINDd_success_loss"].append(success_loss.item())
+            records["BLINDd_main_loss"].append(main_loss.item())
+
+            predicted_logits = logits_debiased
+
 
         # --------------------- 其他模式: ERM / DS / RW ---------------------
         elif self.training_mode in ["ERM", "DS", "RW"]:
@@ -837,7 +978,16 @@ class DownstreamExpert(nn.Module):
             if self.enable_center_cls:
                 records["LVR_center_loss"] = records.get("LVR_center_loss", [])
                 records["LVR_center_loss"].append(L_c.item())
-
+        elif self.training_mode == "random":
+            per_sample_loss = self.objective(
+                logits_debiased, 
+                labels, 
+                self.class_balanced_weights.to(device), 
+                reduction='none'
+            )
+            per_sample_loss = per_sample_loss * sample_weights
+            total_loss = per_sample_loss.mean()
+            predicted_logits = torch.rand(logits_debiased.shape).to(device)
         else:
             raise NotImplementedError(f"Unknown training mode: {self.training_mode}")
 
@@ -940,6 +1090,20 @@ class DownstreamExpert(nn.Module):
             metrics_to_log["DisEnt_Ldis_biased"] = DisEnt_Ldis_biased
             metrics_to_log["DisEnt_Lswap_unbiased"] = DisEnt_Lswap_unbiased
             metrics_to_log["DisEnt_Lswap_biased"] = DisEnt_Lswap_biased
+        elif self.training_mode == "BLIND+d":
+            # BLIND+d
+            if "BLINDd_aux_loss" in records:
+                aux_loss_val = torch.FloatTensor(records["BLINDd_aux_loss"]).mean()
+                main_loss_val = torch.FloatTensor(records["BLINDd_main_loss"]).mean()
+                metrics_to_log["BLINDd_aux_loss"] = aux_loss_val
+                metrics_to_log["BLINDd_main_loss"] = main_loss_val
+        elif self.training_mode == "BLIND-d":
+            # BLIND-d
+            if "BLINDd_success_loss" in records:
+                success_loss_val = torch.FloatTensor(records["BLINDd_success_loss"]).mean()
+                main_loss_val = torch.FloatTensor(records["BLINDd_main_loss"]).mean()
+                metrics_to_log["BLINDd_success_loss"] = success_loss_val
+                metrics_to_log["BLINDd_main_loss"] = main_loss_val
 
         save_names = []
         for key, val in metrics_to_log.items():

@@ -167,7 +167,7 @@ class DownstreamExpert(nn.Module):
         gender_count = defaultdict(int)
         for idx in range(len(self.train_dataset)):
             wav, lab, utt, g = self.train_dataset[idx]
-            gender_count[g] += 1
+            gender_count[g[-1]] += 1
         
         total_genders = len(gender_count)
         # Compute gender-specific weights
@@ -239,7 +239,9 @@ class DownstreamExpert(nn.Module):
         labels = labels.to(device)
         emotion_loss = self.objective(predicted_logits, labels, self.class_balanced_weights.to(device), reduction='mean')
 
-        gender_labels = gender_labels.to(device)
+        # gender_labels = gender_labels.to(device)
+        gender_hard_labels = gender_labels[:, -2] if mode == "test" else gender_labels[:, -1]
+        gender_hard_labels = gender_hard_labels.to(device)
         
         # Compute adversarial losses for each layer
         # Only if valid labels are present
@@ -250,14 +252,14 @@ class DownstreamExpert(nn.Module):
 
         for idx in range(self.num_adversarial_layers):
             # Check if all are -1 (no valid labels)
-            if (gender_labels == -1).all():
+            if (gender_hard_labels == -1).all():
                 # Skip if no valid labels
                 continue
             else:
                 # Use only valid entries
-                valid_mask = (gender_labels != -1)
+                valid_mask = (gender_hard_labels != -1)
                 valid_features = projected_features[valid_mask]
-                valid_labels = gender_labels[valid_mask]
+                valid_labels = gender_hard_labels[valid_mask]
 
                 # Adversarial prediction
                 adv_features = torch.mean(valid_features, dim=1) 
@@ -330,8 +332,8 @@ class DownstreamExpert(nn.Module):
 
         records["all_predictions_binary"].append(predictions_binary.cpu().numpy())
         records["all_labels_binary"].append(labels_binary.cpu().numpy())
-        if gender_labels is not None:
-            records["all_genders"].append(gender_labels.cpu().numpy())
+        if gender_hard_labels is not None:
+            records["all_genders"].append(gender_hard_labels.cpu().numpy())
         else:
             records["all_genders"].append(np.zeros((len(labels_binary),), dtype=np.int64))
 

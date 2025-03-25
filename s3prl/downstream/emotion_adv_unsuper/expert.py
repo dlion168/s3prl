@@ -138,8 +138,11 @@ class DownstreamExpert(nn.Module):
         # 損失函數 (情緒)
         self.objective = class_balanced_softmax_cross_entropy_with_softtarget
         self.num_adversarial_layers = downstream_expert['debias'].get('num_adversarial_layers', 1)
+        if downstream_expert['debias'].get('training_mode', None) == "MADV":
+            self.num_adversarial_layers = 3
         self.lambda_diff = downstream_expert['debias'].get('lambda_diff', 0.1)  # λ_diff hyperparameter
         self.lambda_adv = downstream_expert['debias'].get('lambda_adv', 0.8) 
+        self.num_cluster = downstream_expert['debias'].get('num_cluster', 2)
         # 對抗式性別分類器 (使用2層線性層)
         self.grl = GradientReversal(alpha=1.0)
         self.adv_encoders = nn.ModuleList()
@@ -155,11 +158,11 @@ class DownstreamExpert(nn.Module):
         for _ in range(self.num_adversarial_layers):
             classifier = nn.Sequential(
                 nn.ReLU(),
-                nn.Linear(self.modelrc['projector_dim'] // 2, 1)
+                nn.Linear(self.modelrc['projector_dim'] // 2, self.num_cluster)
             )
             self.adv_classifiers.append(classifier)
 
-        self.gender_criterion = nn.BCEWithLogitsLoss() 
+        self.gender_criterion = nn.CrossEntropyLoss() 
 
         self.expdir = expdir
         self.register_buffer('best_score', torch.ones(1) * 99999)
@@ -167,7 +170,7 @@ class DownstreamExpert(nn.Module):
         gender_count = defaultdict(int)
         for idx in range(len(self.train_dataset)):
             wav, lab, utt, g = self.train_dataset[idx]
-            gender_count[g] += 1
+            gender_count[g[-1]] += 1
         
         total_genders = len(gender_count)
         # Compute gender-specific weights
@@ -239,7 +242,9 @@ class DownstreamExpert(nn.Module):
         labels = labels.to(device)
         emotion_loss = self.objective(predicted_logits, labels, self.class_balanced_weights.to(device), reduction='mean')
 
-        gender_labels = gender_labels.to(device)
+        # gender_labels = gender_labels.to(device)
+        gender_hard_labels = gender_labels[:, -2] if mode == "test" else gender_labels[:, -1]
+        gender_hard_labels = gender_hard_labels.to(device)
         
         # Compute adversarial losses for each layer
         # Only if valid labels are present
@@ -250,14 +255,14 @@ class DownstreamExpert(nn.Module):
 
         for idx in range(self.num_adversarial_layers):
             # Check if all are -1 (no valid labels)
-            if (gender_labels == -1).all():
+            if (gender_hard_labels == -1).all():
                 # Skip if no valid labels
                 continue
             else:
                 # Use only valid entries
-                valid_mask = (gender_labels != -1)
+                valid_mask = (gender_hard_labels != -1)
                 valid_features = projected_features[valid_mask]
-                valid_labels = gender_labels[valid_mask]
+                valid_labels = gender_hard_labels[valid_mask]
 
                 # Adversarial prediction
                 adv_features = torch.mean(valid_features, dim=1) 
@@ -272,14 +277,14 @@ class DownstreamExpert(nn.Module):
                         # Calculate loss for the current gender
                         gender_adv_loss = self.gender_criterion(
                             adv_pred[gender_mask].squeeze(1), 
-                            valid_labels[gender_mask].float()
+                            valid_labels[gender_mask].long()
                         )
                         # Weight the loss
                         adv_loss += gender_adv_loss * weight
                 total_adv_loss += adv_loss
                 
                 # Gender prediction accuracy
-                gender_preds = (torch.sigmoid(adv_pred.squeeze(1)) > 0.5).float()
+                max_probs, gender_preds = torch.max(adv_pred, dim=1)
                 correct_gender_preds += (gender_preds == valid_labels).sum().item()
                 total_gender_samples += valid_labels.size(0)
                 
@@ -330,8 +335,8 @@ class DownstreamExpert(nn.Module):
 
         records["all_predictions_binary"].append(predictions_binary.cpu().numpy())
         records["all_labels_binary"].append(labels_binary.cpu().numpy())
-        if gender_labels is not None:
-            records["all_genders"].append(gender_labels.cpu().numpy())
+        if gender_hard_labels is not None:
+            records["all_genders"].append(gender_hard_labels.cpu().numpy())
         else:
             records["all_genders"].append(np.zeros((len(labels_binary),), dtype=np.int64))
 
